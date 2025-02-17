@@ -36,11 +36,13 @@ extern device_info_t *device_info;
 extern esp_mqtt_client_handle_t client;
 extern char user_5s_data_publish_topic[64];
 extern char user_60s_data_publish_topic[64];
+extern char user_sa_data_publish_topic[64];
 extern char user_sleep_data_publish_topic[64];
 // extern char user_cli_data_subscribe_topic[64];
 
 extern qs_pb_msg_sensor_1min_info *user_60s_sensor_info;
 extern qs_pb_msg_sensor_5sec_info *user_5s_sensor_info;
+extern qs_pb_msg_sleep_apnea_info *user_sa_sensor_info;
 time_t now;
 struct tm ti;
 bool pause_uart_task = true;
@@ -311,7 +313,7 @@ else if (data[0] == 0x33 && data[1]==0x44 && data[2]==0x55)
         if(strcmp(sencondItem->valuestring, device_info->id) != 0) return 0;
         sencondItem = cJSON_GetObjectItem(firstItem, "type");
         if(!sencondItem) return 0;
-        if(sencondItem->valueint == 3)
+        if(sencondItem->valueint == 3)  // 配网
         {
             sencondItem = cJSON_GetObjectItem(firstItem, "cmd");
             if(!sencondItem) return 0;
@@ -682,8 +684,8 @@ void report_to_aliyun(uint8_t type, uint8_t *value, uint16_t len)
 void single_cmd_parse(uint8_t *value, uint16_t len, uint8_t type)
 {
     qs_ret_code_t ret;
-    qs_pb_msg_sensor_5sec_info *m_5s_pb_msg_de;
-    qs_pb_msg_sensor_1min_info *m_60s_pb_msg_de;
+    qs_pb_msg_sensor_5sec_info *m_5s_pb_msg_de;//5s数据 d
+    qs_pb_msg_sensor_1min_info *m_60s_pb_msg_de;//1min数据  e
     qs_pb_msg_cli_command *m_cli_command_de;//命令数据 4
     qs_pb_msg_sleep_cycle_repo *m_sleep_cycle_pb_msg_de;//综合数据 5
     qs_pb_msg_state_raw_data *m_state_pb_msg_de;//睡眠分期  6
@@ -693,6 +695,9 @@ void single_cmd_parse(uint8_t *value, uint16_t len, uint8_t type)
     qs_pb_msg_snore_raw_data *m_snore_pb_msg_de;//打鼾  a
     qs_pb_msg_sbp_raw_data *m_sbp_pb_msg_de;//收缩压    b
     qs_pb_msg_dbp_raw_data *m_dbp_pb_msg_de;//舒张压    c
+    qs_pb_msg_sleep_apnea_info *m_sa_pb_msg_de;//睡眠呼吸暂停 f
+    
+
     char send_json_value[1024] = {0};
     printf("report %d\n",type);
     switch (type)
@@ -729,7 +734,7 @@ void single_cmd_parse(uint8_t *value, uint16_t len, uint8_t type)
             //printf("sleep_cycle_len = %d\n",m_sleep_cycle_pb_msg_de->cal_result);
         
             memset(send_json_value,0,1024);
-            sprintf(send_json_value,"{\"id\":\"%s\",\"ts\":%d,\"type\":5,\"report\":\"%s\",\"data\":{\"calResult\":%d,\"startTime\":%d,\"totalSleepTime\":%d,\"sleepEfficiency\":%d,\"sleepQuality\":%d,\"turnoverTimes\":%d,\"sleepLatency\":%d,\"offBedTimes\":%d,\"cRSD\":%d,\"slop1\":%d,\"slop2\":%d,\"osaTimes\":%d}}",
+            sprintf(send_json_value,"{\"id\":\"%s\",\"ts\":%d,\"type\":5,\"report\":\"%s\",\"data\":{\"calResult\":%d,\"startTime\":%d,\"totalSleepTime\":%d,\"sleepEfficiency\":%d,\"sleepQuality\":%d,\"turnoverTimes\":%d,\"sleepLatency\":%d,\"offBedTimes\":%d,\"cRSD\":%d,\"slop1\":%d,\"slop2\":%d,\"osaTimes\":%d,\"avgSA\":%d,\"maxSA\":%d}}",
                                                                                                         device_info->id,
                                                                                                         device_info->utc.time_stamp,
                                                                                                         json_report_name,
@@ -744,7 +749,10 @@ void single_cmd_parse(uint8_t *value, uint16_t len, uint8_t type)
                                                                                                         m_sleep_cycle_pb_msg_de->cRSD,
                                                                                                         m_sleep_cycle_pb_msg_de->slop1,
                                                                                                         m_sleep_cycle_pb_msg_de->slop2,
-                                                                                                        m_sleep_cycle_pb_msg_de->oSA_times);
+                                                                                                        m_sleep_cycle_pb_msg_de->oSA_times,
+                                                                                                        m_sleep_cycle_pb_msg_de->Ave_SA_time,
+                                                                                                        m_sleep_cycle_pb_msg_de->Longest_SA_time
+                                                                                                        );
             printf("%s\n",send_json_value);
           
             if(get_mqtt_status())
@@ -900,7 +908,47 @@ void single_cmd_parse(uint8_t *value, uint16_t len, uint8_t type)
         }
         free(m_60s_pb_msg_de);
         break;
-    
+    case 0x0f:
+        printf("report %d\n",type);
+        m_sa_pb_msg_de = (qs_pb_msg_sleep_apnea_info *)malloc(sizeof(qs_pb_msg_sleep_apnea_info));
+        memset(m_sa_pb_msg_de, 0, sizeof(qs_pb_msg_sleep_apnea_info));
+        printf("sleep_apnea:单帧 \n\r");
+        ret = qs_pb_sleep_apnea_info_decode((char *)value, len, m_sa_pb_msg_de);
+        if(ret == QS_SUCCESS)
+        {
+            printf("device_id = %s\n",m_sa_pb_msg_de->device_id);
+            printf("timestamp = %d\n",m_sa_pb_msg_de->timestamp);
+            printf("sequence =  %d\n",m_sa_pb_msg_de->sequence);
+            printf("status_flag = %d\n",m_sa_pb_msg_de->status_flag);
+            // memcpy(user_sa_sensor_info, m_sa_pb_msg_de, sizeof(qs_pb_msg_sleep_apnea_info));
+            memset(send_json_value,0,1024);
+            sprintf((char *)send_json_value,"{\"id\":\"%s\",\"ts\":%d,\"type\":15,\"data\":{\"status_flag\":%d}}",
+                                                                                            device_info->id,
+                                                                                            device_info->utc.time_stamp,
+                                                                                            m_sa_pb_msg_de->status_flag);
+            printf("%s\n",send_json_value);
+            if(get_mqtt_status())
+            {
+                if(mqtt_send_mutex == true)
+                {
+                    mqtt_send_mutex = false;
+                    printf("MQTT 发送呼吸暂停数据 \n\r");
+                    esp_mqtt_client_publish(client, user_sa_data_publish_topic, (char *)send_json_value, strlen((char *)send_json_value), 0, 0);
+                    mqtt_send_mutex = true;
+                }
+            }
+            if(get_ble_status())
+            {
+                printf("ble 发送呼吸暂停数据 \n\r");
+                esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
+                                            device_info->ble->conn_id,
+                                            device_info->ble->handle,
+                                            strlen(send_json_value), (uint8_t *)send_json_value, false);
+            }
+            printf("发生了呼吸暂停事件，并上报结束！\n\r");
+        }
+        free(m_sa_pb_msg_de);
+        break;
     default:
         break;
     }
@@ -1085,8 +1133,8 @@ void uart_data_parser_task(void *pv)
                         printf("set addr 3 = %s\n",return_value);
                         // set_bc(device_info->utc.time_stamp, "version", 1, 0, device_version, 200);
                         // printf("bc version = %s\n",device_version);         
-                        set_bc(device_info->utc.time_stamp, "set mode 4", 0, 0, return_value, 10);
-                        // printf("set mode 4 = %s\n",return_value);                
+                        set_bc(device_info->utc.time_stamp, "set mode 4", 1, 0, return_value, 100);
+                        printf("set mode 4 = %s\n",return_value);                
                     }
                     
                     //单帧单指令

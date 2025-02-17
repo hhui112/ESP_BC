@@ -48,6 +48,7 @@
 char ota_infor_publish_topic[64] = {0};     // 缩减为64
 char user_5s_data_publish_topic[64] = {0};
 char user_60s_data_publish_topic[64] = {0};
+char user_sa_data_publish_topic[64] = {0};
 char user_sleep_data_publish_topic[64] = {0};
 char user_cli_data_subscribe_topic[64] = {0};
 char user_cli_data_publish_topic[64] = {0};
@@ -180,6 +181,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         set_mqtt_status(1);
         sprintf(user_5s_data_publish_topic, "/%s/%s/user/5s/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
         sprintf(user_60s_data_publish_topic, "/%s/%s/user/60s/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
+        sprintf(user_sa_data_publish_topic, "/%s/%s/user/sa/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
         sprintf(user_sleep_data_publish_topic, "/%s/%s/user/sleep/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
         
         sprintf(user_cli_data_subscribe_topic, "/%s/%s/user/cli/get", device_info->aliyun.product_key, device_info->aliyun.device_id); 
@@ -190,6 +192,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
         printf("%s\n", user_5s_data_publish_topic);
         printf("%s\n", user_60s_data_publish_topic);
+        printf("%s\n", user_sa_data_publish_topic);
         printf("%s\n", user_sleep_data_publish_topic);
         printf("%s\n", ota_infor_publish_topic);
         

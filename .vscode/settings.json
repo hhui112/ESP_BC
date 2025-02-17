@@ -73,7 +73,9 @@
     "variant": "c",
     "charconv": "c",
     "format": "c",
-    "compare": "c"
+    "compare": "cpp",
+    "iosfwd": "c",
+    "*.def": "c"
   },
   "idf.adapterTargetName": "esp32",
   "idf.portWin": "COM3"

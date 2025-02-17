@@ -22,6 +22,8 @@ static const char *TAG = "common";
 device_info_t *device_info;
 qs_pb_msg_sensor_5sec_info *user_5s_sensor_info;
 qs_pb_msg_sensor_1min_info *user_60s_sensor_info;
+qs_pb_msg_sleep_apnea_info *user_sa_sensor_info;
+
 uint8_t get_wifi_status(void)
 {
 	return device_info->wifi.flag;
@@ -150,6 +152,10 @@ void param_config_init(void)
 	//60s数据
 	user_60s_sensor_info = (qs_pb_msg_sensor_1min_info *)malloc(sizeof(qs_pb_msg_sensor_1min_info));
     memset(user_60s_sensor_info, 0, sizeof(qs_pb_msg_sensor_1min_info));
+
+	//SA数据
+	user_sa_sensor_info = (qs_pb_msg_sleep_apnea_info *)malloc(sizeof(qs_pb_msg_sleep_apnea_info));
+	memset(user_sa_sensor_info, 0, sizeof(qs_pb_msg_sleep_apnea_info));
 }
 
 void config_store_to_flash(void)
