@@ -1,0 +1,2 @@
+/home/zcj/Desktop/hello_world/CMakeFiles/edit_cache.dir
+/home/zcj/Desktop/hello_world/CMakeFiles/rebuild_cache.dir

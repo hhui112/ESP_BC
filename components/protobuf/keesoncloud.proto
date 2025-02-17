@@ -1,0 +1,177 @@
+syntax = "proto3";
+
+
+enum EnumCommandStatus {
+  QS_SUCCESS = 0;
+  QS_INTERNAL_ERROR = 101; 
+  QS_TIMEOUT = 102;
+  QS_NO_RESOURCE = 103;
+}
+
+//版本
+message VersionPostMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  int32 softwareMajorVersion = 3;
+  int32 softwareMinorVersion = 4;
+  int32 softwareReviseVersion = 5;
+}
+
+//固件升级token
+message TokenPostMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  int32 softwareMajorVersion = 3;
+  int32 softwareMinorVersion = 4;
+  int32 softwareReviseVersion = 5;
+  int32 firmwareLenth = 6;
+}
+
+//下载固件字节范围
+message DownloadRangePostMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  int32 firmwareLenth = 3;
+  int32 firmwareStartOffset = 4;
+  int32 firmwareEndOffset = 5;
+}
+
+//指令
+message CliCommand {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  string command = 3;
+}
+
+//5秒实时数据响应
+message Sensor5secMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  int32 sequence = 3;
+  bytes status = 4;
+  int32 heartbeat = 5;
+  int32 breathRate = 6;
+}
+//1分钟实时数据响应
+message Sensor1minMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  int32 sequence = 3;
+  int32 onOffBed = 4;
+  int32 heartbeat = 5;
+  int32 breathRate = 6;
+  int32 Mmin = 7;
+  int32 Mmean = 8;
+  int32 NSD = 9;
+  int32 Npd = 10;
+  int32 SBP = 11;
+  int32 DBP = 12;
+}
+
+//睡眠呼吸暂停数据 xiugai
+message SleepApneaMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  int32 sequence = 3;
+  int32 status_flag = 4;
+};
+
+//睡眠呼吸暂停数据反馈 xiugai
+message SleepApneaBackMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  int32 sequence = 3;
+  int32 back = 4;
+};
+
+//传感器应答基础数据 xiugai
+message SleepCycleRepoMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  int32 calResult = 3;
+  int32 startTime = 4;
+  int32 totalSleepTime = 5;
+  int32 sleepEfficiency = 6;
+  int32 sleepQuality = 7;
+  int32 turnoverTimes = 8;
+  int32 sleepLatency = 9;
+  int32 offBedTimes = 10;
+  int32 cRSD = 11;
+  int32 slop1 = 12;
+  int32 slop2 = 13;
+  int32 oSATimes = 14;
+  int32 Ave_SA_time = 15;
+  int32 Longest_SA_time = 16;
+}
+
+//传感器应答睡眠周期数据
+message StateRawDataMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  bytes data = 3;
+  int32 data_len = 4;
+};
+
+//传感器应答心率数据
+message HeartbeatRawDataMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  bytes data = 3;
+  int32 data_len = 4;
+};
+
+//传感器应答呼吸率数据
+message BreathRawDataMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  bytes data = 3;
+  int32 data_len = 4;
+};
+
+//传感器应答体动次数
+message MovementRawDataMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  bytes data = 3;
+  int32 data_len = 4;
+};
+
+//传感器应答打鼾次数
+message SnoreRawDataMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  bytes data = 3;
+  int32 data_len = 4;
+};
+
+//传感器应答收缩压
+message SbpRawDataMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  bytes data = 3;
+  int32 data_len = 4;
+};
+
+//传感器应答舒张压
+message DbpRawDataMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  bytes data = 3;
+  int32 data_len = 4;
+};
+
+//床控指令
+message BedCommandMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  bytes cmd = 3;
+};
+
+//床状态
+message BedStatusMessage {
+  string deviceID = 1;
+  int32 timestamp = 2;
+  bytes stat = 3;
+  int32 stat_len = 4;
+};
+
