@@ -59,7 +59,7 @@ char json_report_name[32] = {0};
 static char device_id[12] = {0},device_version[32] = {0},set_rtc_flag = 0,devic_id_flag = 0;   //bc重启后将两个标志位置零，重新设置addr与rtc 
 static char sleep_up_flag = 0,ota_now_flag = 0,sensor_upgrade_flag = 0;//sleep_up睡眠报告上传进行中、esp32固件升级、博创传感器升级标志
 static uint16_t  sensor_ota_mode_cnt = 0;
-static uint8_t set_mode_flag = 0;   // xinzeng:set_mode_flag 强制生成报告
+static uint8_t set_mode_flag = 2;   // xinzeng:set_mode_flag 强制生成报告
 static char report_cli_data[2]={0},cli_report_name[32]={0};
 void set_cli_report_name(char* data,char len)
 {
@@ -1274,7 +1274,7 @@ int set_bc(uint32_t time_stamp, char *value, uint8_t switch_return, uint8_t swit
             if(strstr(value, "list"))
             {
                 char *report = report_muilt_cmd_parse(uart_recbuff, rxBytes);  //返回睡眠报告列表
-                printf("in set bc %s\n",report);
+                printf("in set bc report:\n%s\n",report);
                 if(return_value!=NULL)
                 {
                     strcpy(return_value, (char *)report);
@@ -1441,7 +1441,10 @@ uint32_t find_report_time(char *report_name, uint8_t len)
     // printf("%s\n", report_name);
     struct tm stm;  
     int iY, iM, iD, iH, iMin, iS;  
-    
+    if (len < 23) {
+        printf("Invalid report format: Length is too short.\n");
+        return 0;           // 返回默认值，表示格式错误
+    }
     memset(&stm, 0, sizeof(stm));  
     iY =    atoi(report_name + len - 23);
     // printf("iY = %d\n",iY);  
@@ -1455,7 +1458,13 @@ uint32_t find_report_time(char *report_name, uint8_t len)
     // printf("iMin = %d\n",iMin);  
     iS =    atoi(report_name + len - 6);  
     // printf("iS = %d\n",iS);  
-
+        // 简单校验：确保日期和时间的字段有效
+    if (iY < 1900 || iM < 1 || iM > 12 || iD < 1 || iD > 31 || 
+        iH < 0 || iH > 23 || iMin < 0 || iMin > 59 || iS < 0 || iS > 59) {
+        printf("Invalid time values in report: %d-%d-%d %d:%d:%d\n", iY, iM, iD, iH, iMin, iS);
+        return 0; // 返回默认值，表示解析失败
+    }
+    memset(&stm, 0, sizeof(stm));
     stm.tm_year=iY-1900;  
     stm.tm_mon=iM-1;  
     stm.tm_mday=iD;  
@@ -1486,7 +1495,7 @@ void check_report_and_up_to_aliyun(void)
     memset(return_value, 0, 1024);
     printf("get_report_cmd1\n");
     set_bc(device_info->utc.time_stamp, get_report_cmd1, 1, 1, return_value, 1000);
-    // printf("cil = list :return_value = \n %s\nstrlen(return_value) = %d\n", return_value, strlen(return_value));
+    // printf("\n \n \n cil = list :return_value =\n%s\nstrlen(return_value) = %d\n", return_value, strlen(return_value));
 
     if(strstr(return_value,"NONE"))
     {
@@ -1574,8 +1583,8 @@ void check_report_and_up_to_aliyun(void)
                     memset(device_info->report,0,128);
                     memcpy(device_info->report, report_name[i], strlen(report_name[i]));
                     printf("recent report= %s\n", device_info->report);
-                    // current_time = find_report_time(device_info->report, strlen(device_info->report));
-                    current_time = report_time[i];
+                    current_time = find_report_time(device_info->report, strlen(device_info->report));
+                    //current_time = report_time[i];
                 }
 
                 if(device_info->data_up_switch)
@@ -1981,7 +1990,7 @@ void Task_scheduling(void *pv)
 {
     //static uint8_t s_real_data_up_task_flag = 0;
     //static uint8_t s_report_data_up_task = 0;
-    static uint8_t s_5s_Cnt = 119;
+    static uint8_t s_5s_Cnt = 115;
     static uint8_t s_1s_Cnt = 5;
     //xTaskCreatePinnedToCore(utc_get_task, "utc_get", 1024*5, NULL, 3, &utc_get_task_handle, 1);
     vTaskDelay(10000 / portTICK_PERIOD_MS);     //10s 初始化时间、版本号、传感器 ：old：5s
@@ -2002,12 +2011,14 @@ void Task_scheduling(void *pv)
     //报告数据上报
     if(get_mode_flag_config() == 0 || s_5s_Cnt>119)
     {
-        set_mode_flag_config(2);
         if(device_info->utc.flag == true && get_5s_flag == true)
         {
+            set_mode_flag_config(2);
             s_5s_Cnt=0;
             xTaskCreatePinnedToCore(report_data_up_task, "report_data_up", 1024*10, NULL, 10, &report_data_up_task_handle, 1);//缩减2048*7
             
+        }else{
+            s_5s_Cnt = 115; // 延迟30s
         }
  
     }
