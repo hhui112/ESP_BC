@@ -54,6 +54,8 @@ char user_cli_data_subscribe_topic[64] = {0};
 char user_cli_data_publish_topic[64] = {0};
 char ota_upgrade_subscribe_topic[64] = {0};
 char mqtt_connect_aliyun_url[64] = {0};
+char mc_cli_data_subscribe_topic[64] = {0};
+char mc_cli_data_publish_topic[64] = {0};
 
 static const char *TAG = "wifi station";
 int s_retry_num = 0;
@@ -161,6 +163,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     cJSON *secondItem;
     cJSON *thirdItem;
     char temp[2048] = {0};
+    uint8_t cmd_bin[64] = {0}; // 存放MQTT_key数据
     // 通过事件ID来分别处理对应的事件
     switch (event->event_id)
     {
@@ -190,15 +193,21 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         sprintf(ota_upgrade_subscribe_topic,  "/ota/device/upgrade/%s/%s",device_info->aliyun.product_key, device_info->aliyun.device_id);
         sprintf(ota_infor_publish_topic,  "/ota/device/inform/%s/%s",device_info->aliyun.product_key, device_info->aliyun.device_id);
 
+        sprintf(mc_cli_data_subscribe_topic, "/%s/%s/mc/cli/get", device_info->aliyun.product_key, device_info->aliyun.device_id);
+        sprintf(mc_cli_data_publish_topic, "/%s/%s/mc/cli/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
+
         printf("%s\n", user_5s_data_publish_topic);
         printf("%s\n", user_60s_data_publish_topic);
         printf("%s\n", user_sa_data_publish_topic);
         printf("%s\n", user_sleep_data_publish_topic);
         printf("%s\n", ota_infor_publish_topic);
+        printf("%s\n", mc_cli_data_subscribe_topic);
+        printf("%s\n", mc_cli_data_publish_topic);
         
         printf("%s\n", user_cli_data_subscribe_topic);
         esp_mqtt_client_subscribe(client, user_cli_data_subscribe_topic, 0);   //订阅服务
         esp_mqtt_client_subscribe(client, ota_upgrade_subscribe_topic, 0);
+        esp_mqtt_client_subscribe(client, mc_cli_data_subscribe_topic, 0);
       
         if (device_info->ota.flag)    //ota版本上传服务
         {
@@ -451,6 +460,62 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             else{
                 printf("cJSON_Parse wrong\n");
             }   
+        }else if (msg&&strstr(msg->topic, mc_cli_data_subscribe_topic))
+        {
+            firstItem = cJSON_Parse((char *)msg->data);
+            printf("%s\n", msg->data);
+            if (firstItem)
+            {
+                secondItem = cJSON_GetObjectItem(firstItem, "id");
+                if (secondItem && strstr(secondItem->valuestring, device_info->id))
+                {
+                    secondItem = cJSON_GetObjectItem(firstItem, "type");
+                    if(secondItem && strstr(secondItem->valuestring, "1"))
+                    {
+                        if(get_devic_id_flag() == 0)
+                        {
+                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"no sensor id,wait two min again\"}", 
+                                device_info->id,
+                                device_info->utc.time_stamp,
+                                secondItem->valuestring);
+                            esp_mqtt_client_publish(client, user_cli_data_publish_topic, (char *)temp, strlen((char *)temp), 0, 0);      
+                        }else
+                        {
+                            secondItem = cJSON_GetObjectItem(firstItem, "cmd");
+                            printf("I mqtt mc cil:secondItem = %s\n",secondItem->valuestring);
+                            if (secondItem) 
+                            {
+                                const char *cmd_str = secondItem->valuestring;  
+                                int cmd_len = 0;
+                                // 每2个字符转换为一个字节
+                                while (*cmd_str && *(cmd_str + 1) && (cmd_len < 64)) {
+                                    char byte_str[3] = { cmd_str[0], cmd_str[1], '\0' };
+                                    cmd_bin[cmd_len++] = (uint8_t)strtol(byte_str, NULL, 16);
+                                    cmd_str += 2;
+                                }
+                                // 将转换后的数据通过队列发送出去
+                                if (cmd_len > 0 && cmd_bin[0] == 0xAA) 
+                                {
+                                    for(int i=0;i<cmd_len;i++){printf("%02X ",cmd_bin[i]);}printf("\n\n");
+
+                                    if (xQueueSend(device_info->mqtt_key->xQueue, cmd_bin, 0) != pdPASS) {
+                                        printf("Queue send failed.\r\n");
+                                    }
+                                }else{
+                                    printf("mqtt head error\n");
+                                }
+                            }
+                        }
+                    }
+                }
+                else{
+                    printf("cJSON_Parse id wrong\n");
+                }
+                cJSON_Delete(firstItem);    
+            }
+            else{
+                printf("cJSON_Parse wrong\n");
+            }   
         }
         else if (msg&&strstr(msg->topic, ota_upgrade_subscribe_topic))
         {
@@ -498,7 +563,7 @@ void aliyun_mqtt_server(void)
     //个人阿里云
     // sprintf(mqtt_connect_aliyun_url, "%s.iot-as-mqtt.cn-shanghai.aliyuncs.com", device_info->aliyun.product_key);    //product_host
     //企业阿里云
-    strcpy(mqtt_connect_aliyun_url, "iot-060a3upv.mqtt.iothub.aliyuncs.com");    //iot-060a3upv.mqtt.iothub.aliyuncs.com
+    strcpy(mqtt_connect_aliyun_url, "192.168.107.63");    //iot-060a3upv.mqtt.iothub.aliyuncs.com
 
     // aiotMqttSign(device_info.product_key, device_info.product_id, device_info.device_secret, clientid, username, password);
     aiotMqttSign(device_info->aliyun.product_key, device_info->aliyun.device_id, device_info->aliyun.device_secret, clientid, username, password);

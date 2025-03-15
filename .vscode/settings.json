@@ -75,7 +75,9 @@
     "format": "c",
     "compare": "cpp",
     "iosfwd": "c",
-    "*.def": "c"
+    "*.def": "c",
+    "use_uart.h": "c",
+    "bitset": "c"
   },
   "idf.adapterTargetName": "esp32",
   "idf.portWin": "COM3"

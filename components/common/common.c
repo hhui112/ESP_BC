@@ -113,6 +113,12 @@ void param_config_init(void)
 	if (device_info->ble->xQueue == NULL)
 		ESP_LOGW(TAG,"ble.xQueue create error!");
 
+	device_info->mqtt_key = (mqtt_key_info_t *)malloc(sizeof(mqtt_key_info_t));
+	memset(device_info->mqtt_key, 0, sizeof(mqtt_key_info_t));
+	device_info->mqtt_key->xQueue = xQueueCreate(10, 64);   //缩减10 512
+	if (device_info->mqtt_key->xQueue == NULL)
+		ESP_LOGW(TAG,"mqtt_key.xQueue create error!");
+
 	device_info->aliyun.xQueue = xQueueCreate(10, sizeof(mmqtt_msg_t));
 	if (device_info->aliyun.xQueue == NULL)
 		ESP_LOGW(TAG,"aliyun.xQueue create error!");

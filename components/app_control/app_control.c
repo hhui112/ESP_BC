@@ -61,6 +61,49 @@ static char sleep_up_flag = 0,ota_now_flag = 0,sensor_upgrade_flag = 0;//sleep_u
 static uint16_t  sensor_ota_mode_cnt = 0;
 static uint8_t set_mode_flag = 2;   // xinzeng:set_mode_flag 强制生成报告
 static char report_cli_data[2]={0},cli_report_name[32]={0};
+
+#define ECHO_TEST_TXD (19)
+#define ECHO_TEST_RXD (25)
+#define ECHO_TEST_RTS (UART_PIN_NO_CHANGE)
+#define ECHO_TEST_CTS (UART_PIN_NO_CHANGE)
+
+#define ECHO_UART_PORT_NUM      (2)
+#define ECHO_UART_BAUD_RATE     (38400)
+#define ECHO_TASK_STACK_SIZE    (4096)
+
+#define BUF_SIZE (1024)
+
+static QueueHandle_t uart2_queue;
+
+union SyncCommunicationData_t com_485_tx_u;
+union SyncCommunicationData_t com_485_rx_u;
+
+union SyncCommunicationData_t g_Sync_TX;
+union SyncCommunicationData_t g_Sync_RX;
+union keys_t   g_keys;
+g_system_flag_t g_system_flag;
+
+// 打鼾干预结构体初始化
+static snore_intervention_t g_snore_intv = {
+    .snore_last_event_time = 0,
+    .snore_in_progress = false,
+    .snore_event_triggered = false,
+
+    .snoring_block = {0},
+    .block_index = 0,
+
+    .block_size = BLOCK_BUFFER_SIZE, 
+    .snoring_threshold = SNORING_THRESHOLD,
+    .snoring_threshold_5s = SNORING_THRESHOLD_5S,
+    .snore_cooldown_period = 60,
+
+    // .snore_cooldown_period = SNORE_COOLDOWN_SECONDS,
+};
+
+// 循环数组，保存每个5秒更新周期中，体动数据等于4的个数
+static uint8_t snoring_block[BLOCK_BUFFER_SIZE] = {0};
+static uint8_t block_index = 0;
+
 void set_cli_report_name(char* data,char len)
 {
     memset(cli_report_name, 0, 32);
@@ -1160,6 +1203,38 @@ void uart_data_parser_task(void *pv)
     vTaskDelete(NULL);
 }
 
+
+void snoring_detection_func(void)
+{
+    uint8_t count_in_block = 0;
+    
+    // 统计当前5秒数据中，体动值为4的次数
+    for (int i = 0; i < 5; i++) {
+        if (user_5s_sensor_info->status[i] == 4) {
+            count_in_block++;
+        }
+    }
+    
+    // 如果5秒内体动值为4的次数大于等于4，则认为本次数据块为打鼾包，记为1；否则为0
+    uint8_t block_value = (count_in_block >= g_snore_intv.snoring_threshold_5s) ? 1 : 0;
+    
+    // 更新循环缓冲区：记录本次5秒数据块的打鼾状态
+    g_snore_intv.snoring_block[g_snore_intv.block_index] = block_value;
+    g_snore_intv.block_index = (g_snore_intv.block_index + 1) % g_snore_intv.block_size;
+    printf("block_index : %d,block_value : %d\n",g_snore_intv.block_index,block_value);
+    
+    // 计算最近2分钟内（24个数据块）打鼾包的数量
+    uint16_t total_count = 0;
+    for (int i = 0; i < g_snore_intv.block_size; i++) {
+        total_count += g_snore_intv.snoring_block[i];
+    }
+    
+    // 若2分钟内打鼾包数量达到阈值，则触发打鼾事件
+    if (total_count >= g_snore_intv.snoring_threshold) {
+        g_system_flag.snore_event_triggered = 1;
+    }
+}
+
 //参数显示任务
 void data_display_task(void *pv)
 {
@@ -1200,7 +1275,7 @@ void data_display_task(void *pv)
             ESP_LOGI(TAG, "%d-%02d-%02d %02d:%02d:%02d  %02d %d", ti.tm_year ,ti.tm_mon, ti.tm_mday, ti.tm_hour, ti.tm_min, ti.tm_sec , ti.tm_wday, device_info->utc.time_stamp);
         }
         
-
+        snoring_detection_func();   // 判断是否打鼾
         vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
     vTaskDelete(NULL);
@@ -1351,7 +1426,7 @@ int sensor_ota_bc(char *value)
     }
     else{
         printf("bc_receive len %d SENSER OTA\n\r",size+8);
-        time = 1000;
+        time = 100;			// 原本1000
     }
     
 
@@ -2051,6 +2126,396 @@ void key_task(void)
     }
 
 }
+
+
+void  Debug_printf_buff(uint8_t *buff ,uint16_t len)
+{
+	int i = 0;
+	printf("\r\n");
+	for(i = 0; i < len ;i++)
+	{
+		printf("%02X ",buff[i]);
+	}
+	printf("\r\n");
+}
+
+
+// 函数：根据当前 g_Sync_TX.BcPlugInPacket 设置填充数据包（如键值等）
+void prepare_mfp_command(uint8_t type, uint32_t keys)
+{
+    // 清零整个数据包缓存
+    memset(g_Sync_TX.rawData, 0, sizeof(g_Sync_TX.rawData));
+    printf("type = %d \r\n",type);
+
+    if(type == KEYS_TYPE_NORMAL){
+        printf("KEYS_TYPE_NORMAL\n");
+        g_Sync_TX.PlugInPacket_Normal.length   = 0x05;  // 数据部分长度
+        g_Sync_TX.PlugInPacket_Normal.type     = 0x01;  // 固定类型
+        g_Sync_TX.PlugInPacket_Normal.keys     = keys;  // 设置不同的命令键值
+        g_Sync_TX.PlugInPacket_Normal.ctrlMode = 0x00;
+        g_Sync_TX.PlugInPacket_Normal.checksum = syncCalcCheckSum();
+    }else if(type == KEYS_TYPE_SOFT_START){
+        printf("KEYS_TYPE_SOFT_START\n");
+        g_Sync_TX.PlugInPacket_SlowStart.length   = 0x07;  // 数据部分长度
+        g_Sync_TX.PlugInPacket_SlowStart.type     = 0x01;  // 固定类型
+        g_Sync_TX.PlugInPacket_SlowStart.keys     = keys;  // 设置不同的命令键值
+        g_Sync_TX.PlugInPacket_SlowStart.cmd      = 0x00;
+        g_Sync_TX.PlugInPacket_SlowStart.pwm      = 0x50;
+        g_Sync_TX.PlugInPacket_SlowStart.tmr      = 0x20;
+        g_Sync_TX.PlugInPacket_SlowStart.checksum = syncCalcCheckSum();
+    }else if(type == KEYS_TYPE_MASSAGE){
+        printf("KEYS_TYPE_MASSAGE\n");
+        g_Sync_TX.PlugInPacket_MASSAGE.length   = 0x0a;  // 数据部分长度
+        g_Sync_TX.PlugInPacket_MASSAGE.type     = 0x01;  // 固定类型
+        g_Sync_TX.PlugInPacket_MASSAGE.keys     = keys;  // 设置不同的命令键值
+        g_Sync_TX.PlugInPacket_MASSAGE.reserve1 = 0x0000;
+        g_Sync_TX.PlugInPacket_MASSAGE.cmd      = 0x00;
+        g_Sync_TX.PlugInPacket_MASSAGE.ctrcmd   = 0x00;
+        g_Sync_TX.PlugInPacket_MASSAGE.reserve2 = 0x0000;
+        g_Sync_TX.PlugInPacket_MASSAGE.checksum = syncCalcCheckSum();
+    }else{
+        return;
+    }
+}
+
+void mfp_dateSend(void)
+{   
+    printf("mfp_dateSend\n");
+    Debug_printf_buff(g_Sync_TX.rawData,g_Sync_TX.Syncdata.length+3);
+    uart_flush(ECHO_UART_PORT_NUM);
+    gpio_set_level(UART_CTR, 0);
+    vTaskDelay(1 / portTICK_PERIOD_MS);
+    uart_write_bytes(ECHO_UART_PORT_NUM, g_Sync_TX.rawData, g_Sync_TX.Syncdata.length+3);
+    uart_wait_tx_done(ECHO_UART_PORT_NUM, pdMS_TO_TICKS(10));
+    gpio_set_level(UART_CTR, 1);
+}
+
+// 统一的发送处理函数，根据不同事件分别处理
+void mfp_datasend_handler(void)
+{
+    // 只有在允许发送的情况下才进行处理
+    if (g_system_flag.mfp_tx_ready != 1) {
+        return;
+    }
+    
+    // 优先处理 MQTT 数据下发
+    if (g_system_flag.mqtt_data_flag) {
+        // 这里假设 MQTT 数据已经提前填入 g_Sync_TX.rawData 中，0
+        // 或者可以调用相应的函数将 MQTT 数据填入数据包结构
+        prepare_mfp_command(KEYS_TYPE_NORMAL,KEY_M1_OUT);
+        mfp_dateSend();
+        g_system_flag.send_cnt++;
+        if(g_system_flag.send_cnt >= 3)
+        {
+            g_system_flag.mqtt_data_flag = 0;  // 清除MQTT数据下发标志
+            g_system_flag.send_cnt = 0;
+        }
+    }
+    // 如果检测到打鼾事件触发标志
+    if (g_system_flag.snore_event_triggered) {
+        // 如果之前没有处理过打鼾事件，则立即发送缓启动抬升命令
+        if (!g_snore_intv.snore_in_progress) {
+            printf("触发打鼾干预:triggered = %d , in_progress = %d \r\n",g_system_flag.snore_event_triggered,g_snore_intv.snore_in_progress);
+            prepare_mfp_command(KEYS_TYPE_SOFT_START, KEY_MEMORY4);
+            mfp_dateSend();
+            // 记录当前时间戳，并标记已处理打鼾事件
+            g_snore_intv.snore_last_event_time = device_info->utc.time_stamp;
+            g_system_flag.send_cnt++;
+            if(g_system_flag.send_cnt >= 3)
+            {
+                g_snore_intv.snore_in_progress = true;
+                g_system_flag.send_cnt = 0;
+            }
+        }
+        else {
+            // 已在处理中，判断是否已过30分钟
+            if ((device_info->utc.time_stamp - g_snore_intv.snore_last_event_time) >= g_snore_intv.snore_cooldown_period) {
+                // 30分钟已到，发送缓启动降下命令
+                prepare_mfp_command(KEYS_TYPE_SOFT_START, KEY_ALLFATE);
+                mfp_dateSend();
+                // 清除打鼾事件标志，结束本次打鼾干预
+                g_system_flag.send_cnt++;
+                if(g_system_flag.send_cnt >= 3)
+                {
+                    g_system_flag.send_cnt = 0;
+                    g_snore_intv.snore_in_progress = false;
+                    g_system_flag.snore_event_triggered = 0;
+                }
+            }
+        }
+    }
+}
+
+void mfp_datasend_handler_Demo_slow(void)
+{
+    // 只有在允许发送的情况下才进行处理
+    if (g_system_flag.mfp_tx_ready != 1) {
+        return;
+    }
+    
+    // 优先处理 MQTT 数据下发
+    if (g_system_flag.mqtt_data_flag) {
+        // 这里假设 MQTT 数据已经提前填入 g_Sync_TX.rawData 中，0
+        // 或者可以调用相应的函数将 MQTT 数据填入数据包结构
+        
+        mfp_dateSend();
+        g_system_flag.mqtt_data_flag = 0;  // 清除MQTT数据下发标志
+    }
+    g_system_flag.snore_event_triggered = 1;
+    // 如果检测到打鼾事件触发标志
+    if (g_system_flag.snore_event_triggered) {
+        // 如果之前没有处理过打鼾事件，则立即发送缓启动抬升命令
+        if (!g_snore_intv.snore_in_progress) {
+            prepare_mfp_command(KEYS_TYPE_SOFT_START, KEY_HEAD_LIFT);
+            mfp_dateSend();
+            // 记录当前时间戳，并标记已处理打鼾事件
+            g_snore_intv.snore_last_event_time = device_info->utc.time_stamp;
+            g_snore_intv.snore_in_progress = true;
+        }
+        else {
+            // 已在处理中，判断是否已过30分钟
+            if ((device_info->utc.time_stamp - g_snore_intv.snore_last_event_time) >= g_snore_intv.snore_cooldown_period) {
+                // 30分钟已到，发送缓启动降下命令
+                prepare_mfp_command(KEYS_TYPE_SOFT_START, KEY_HEAD_LOWER_BOTTOM);
+                mfp_dateSend();
+                // 清除打鼾事件标志，结束本次打鼾干预
+                g_system_flag.snore_event_triggered = 0;
+                g_snore_intv.snore_in_progress = false;
+            }
+        }
+    }
+}
+
+/*
+void mfp_datasend_handler_test(void)
+{
+    static uint8_t s_cnt = 0;
+    // 只有在允许发送的情况下才进行处理
+    if (g_system_flag.mfp_tx_ready != 1) {
+        return;
+    }
+    if(s_cnt < 15)
+    {
+        prepare_mfp_command(KEYS_TYPE_NORMAL,KEY_M1_OUT);
+        mfp_dateSend();
+    }else if(s_cnt == 15){
+        prepare_mfp_command(KEYS_TYPE_NORMAL,KEY_MOTOR_STOP);
+        mfp_dateSend();
+    }else if(s_cnt > 20 && s_cnt < 40)
+    {
+        prepare_mfp_command(KEYS_TYPE_NORMAL,KEY_M1_IN);
+        mfp_dateSend();
+    }else if(s_cnt == 50){
+        prepare_mfp_command(KEYS_TYPE_NORMAL,KEY_MOTOR_STOP);
+        mfp_dateSend();
+    }
+    
+    if(s_cnt == 70){
+        
+        mfp_dateSend();
+        s_cnt=0;
+    }
+    s_cnt++;
+}
+*/
+
+void mfp_datareceive_handler(uint8_t *p,uint16_t len)
+{
+    static uint32_t count = 0;
+    uint8_t checkSum = 0,checkSum1 = 0;
+    memcpy(g_Sync_RX.rawData+count,p,len);
+	count = count+len;
+
+    if(g_Sync_RX.Syncdata.length != 0x34)       // 485数据长度 52个字节 3电机  52+3 = 55 
+    {
+        count = 0;
+    }
+        
+    // for(int i = 0;i<count;i++){printf("count:%d: %x ",i,g_Sync_RX.rawData[i]);} printf("\r\n");
+    // printf("checkSum: %x checkSum1: %x \r\n",rxCalcCheckSum(),g_Sync_RX.Syncdata.data[g_Sync_RX.Syncdata.length]);
+    if( (count != 0) && (count>=g_Sync_RX.Syncdata.length+3))
+	{	
+		checkSum = rxCalcCheckSum();
+		checkSum1 = g_Sync_RX.Syncdata.data[g_Sync_RX.Syncdata.length];
+		if(checkSum == checkSum1 && g_Sync_RX.rawData[0] != 0)
+		{	
+            // printf("checkSum: %x checkSum1: %x \r\n",checkSum,checkSum1);
+            // for(int i = 0;i<count;i++){printf("%x ",g_Sync_RX.rawData[i]);} printf("\r\n");
+            //  app_send_handle();
+            // OKIN_MFP_Cmd(g_Sync_RX.syncPacket.type);
+            
+            vTaskDelay(pdMS_TO_TICKS(2));
+
+            // 发送数据
+            /* 如果MQTT有控制数据来 || 触发打鼾干预逻辑 发送数据*/
+            g_system_flag.mfp_tx_ready = 1;
+           //  g_system_flag.mqtt_data_flag= 1;
+            // mfp_dateSend();
+		    count = 0;	
+		}
+		else
+		{	
+            // err++;	
+			count = 0;
+		}
+	}
+    
+//    com_485_rx_u
+}
+
+static void MFP_DataReceive_task(void *arg)
+{
+    /* Configure parameters of an UART driver,
+     * communication pins and install the driver */
+    uart_config_t uart_config={
+        .baud_rate = ECHO_UART_BAUD_RATE,                // 波特率38400
+        .data_bits = UART_DATA_8_BITS,                  // 8位数据位
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,          // 无硬件流控制
+        .parity = UART_PARITY_EVEN,                     // 偶校验
+        .stop_bits = UART_STOP_BITS_1                   // 1位停止位
+    };
+
+    uart_event_t event;
+
+    ESP_ERROR_CHECK(uart_driver_install(ECHO_UART_PORT_NUM, BUF_SIZE * 2, 0, 20, &uart2_queue, 0));
+    ESP_ERROR_CHECK(uart_param_config(ECHO_UART_PORT_NUM, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(ECHO_UART_PORT_NUM, ECHO_TEST_TXD, ECHO_TEST_RXD, ECHO_TEST_RTS, ECHO_TEST_CTS));
+
+    // Configure a temporary buffer for the incoming data
+    uint8_t *dtmp  = (uint8_t *) malloc(BUF_SIZE);
+
+    while (1)
+    {
+
+        //Waiting for UART event.
+        if (xQueueReceive(uart2_queue, (void *)&event, (TickType_t)portMAX_DELAY)) 
+        {
+            memset(dtmp, 0, BUF_SIZE);
+            //ESP_LOGI(TAG, "uart[%d] event:", ECHO_UART_PORT_NUM);
+            switch (event.type)
+            {
+            //Event of UART receving data
+            /*We'd better handler data event fast, there would be much more data events than
+            other types of events. If we take too much time on data event, the queue might
+            be full.*/
+            case UART_DATA:
+               // ESP_LOGI(TAG, "[UART DATA]: %d", event.size);
+                uart_read_bytes(ECHO_UART_PORT_NUM, dtmp, event.size, portMAX_DELAY);
+                mfp_datareceive_handler(dtmp,event.size);
+               // ESP_LOGI(TAG, "[DATA EVT]:");
+                //uart_write_bytes(ECHO_UART_PORT_NUM, (const char*) dtmp, event.size);
+                break;
+            //Event of HW FIFO overflow detected
+            case UART_FIFO_OVF:
+                ESP_LOGI(TAG, "hw fifo overflow");
+                // If fifo overflow happened, you should consider adding flow control for your application.
+                // The ISR has already reset the rx FIFO,
+                // As an example, we directly flush the rx buffer here in order to read more data.
+                uart_flush_input(ECHO_UART_PORT_NUM);
+                xQueueReset(uart2_queue);
+                break;
+            //Event of UART ring buffer full
+            case UART_BUFFER_FULL:
+                ESP_LOGI(TAG, "ring buffer full");
+                // If buffer full happened, you should consider increasing your buffer size
+                // As an example, we directly flush the rx buffer here in order to read more data.
+                uart_flush_input(ECHO_UART_PORT_NUM);
+                xQueueReset(uart2_queue);
+                break;
+            //Event of UART RX break detected
+            case UART_BREAK:
+                ESP_LOGI(TAG, "uart rx break");
+                break;
+            //Event of UART parity check error
+            case UART_PARITY_ERR:
+                ESP_LOGI(TAG, "uart parity error");
+                break;
+            //Event of UART frame error
+            case UART_FRAME_ERR:
+                ESP_LOGI(TAG, "uart frame error");
+                break;
+            //UART_PATTERN_DET
+            case UART_PATTERN_DET:
+            /*
+                uart_get_buffered_data_len(ECHO_UART_PORT_NUM, &buffered_size);
+                int pos = uart_pattern_pop_pos(ECHO_UART_PORT_NUM);
+                ESP_LOGI(TAG, "[UART PATTERN DETECTED] pos: %d, buffered size: %d", pos, buffered_size);
+                if (pos == -1) {
+                    // There used to be a UART_PATTERN_DET event, but the pattern position queue is full so that it can not
+                    // record the position. We should set a larger queue size.
+                    // As an example, we directly flush the rx buffer here.
+                    uart_flush_input(ECHO_UART_PORT_NUM);
+                } else {
+                    uart_read_bytes(ECHO_UART_PORT_NUM, dtmp, pos, 100 / portTICK_PERIOD_MS);
+                    uint8_t pat[ECHO_UART_PORT_NUM + 1];
+                    memset(pat, 0, sizeof(pat));
+                    uart_read_bytes(ECHO_UART_PORT_NUM, pat, ECHO_UART_PORT_NUM, 100 / portTICK_PERIOD_MS);
+                    ESP_LOGI(TAG, "read data: %s", dtmp);
+                    ESP_LOGI(TAG, "read pat : %s", pat);
+                }
+            */
+                ESP_LOGI(TAG, "uart pattern detected");
+                break;
+            //Others
+            default:
+                ESP_LOGI(TAG, "uart event type: %d", event.type);
+                break;
+            }
+        }            
+    }
+}
+
+static void MFP_DataSend_task(void *arg)
+{
+    while (1) 
+    {       
+        if (g_system_flag.mfp_tx_ready) 
+        {
+            mfp_datasend_handler();
+            g_system_flag.mfp_tx_ready = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(15));
+    }
+    vTaskDelete(NULL);  // 理论上不会执行到这里，但保持一致性
+}
+
+int mqtt_key_parser_cb(uint8_t *data){
+
+    if (data[0] != 0xAA) 
+    {
+        return -1;
+    }
+    if(data[1] == 0x01)
+    {
+        // 普通按键控制
+        printf("普通按键控制 \r\n");
+        // memcpy(g_Sync_TX.rawData, &data[3], data[2]);
+        g_system_flag.mqtt_data_flag = 1;
+    }else if(data[1] == 0x02)
+    {
+        // 触发打鼾干预
+        printf("触发打鼾干预 \r\n");
+        g_system_flag.snore_event_triggered = data[3];
+    }
+
+    return 0;
+}
+
+
+
+
+void mqtt_key_parser_task(void *pv)
+{
+    while (1)
+    {
+        if (xQueueReceive(device_info->mqtt_key->xQueue, device_info->mqtt_key->data_rec.value, portMAX_DELAY))
+        {
+            mqtt_key_parser_cb(device_info->mqtt_key->data_rec.value);
+        }
+    }
+    vTaskDelete(NULL);
+}
+
 void app_control_server(void)
 {
     //ble 数据处理
@@ -2066,6 +2531,12 @@ void app_control_server(void)
 
     xTaskCreatePinnedToCore(Task_scheduling, "Task_scheduling", 1024, NULL, 6, NULL, 1);//缩减2048*7
     // xTaskCreatePinnedToCore(key_task, "key_task", 1024, NULL, 6, NULL, 1);//缩减2048*7
+
+    xTaskCreate(MFP_DataReceive_task, "MFP_DataReceive_task", ECHO_TASK_STACK_SIZE, NULL, 10, NULL);     // mfp口的接收任务 1024*4
+
+    xTaskCreate(MFP_DataSend_task, "MFP_DataSend_task ", ECHO_TASK_STACK_SIZE, NULL, 1, NULL); // mfp口发送任务 1024*4
+
+    xTaskCreatePinnedToCore(mqtt_key_parser_task, "mqtt_key_parser_task", 1024*2, NULL, 5, NULL, 1);
 }
 
 void set_sleep_up_flag(uint8_t data)

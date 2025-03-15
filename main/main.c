@@ -20,6 +20,10 @@
 #include "use_ota.h"
 #include "common.h"
 #include "app_control.h"
+#include "use_uart.h"
+// #include "esp_log.h"
+
+
 
 void app_main(void)
 {
@@ -43,7 +47,7 @@ void app_main(void)
 
   initialize_ble_server();      //蓝牙初始化
   initialize_wifi();            //wifi初始化
-
+  mfp_gpio_config();
   app_control_server();           //app通信控制系统
   
 }
