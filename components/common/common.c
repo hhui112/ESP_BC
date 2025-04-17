@@ -113,6 +113,12 @@ void param_config_init(void)
 	if (device_info->ble->xQueue == NULL)
 		ESP_LOGW(TAG,"ble.xQueue create error!");
 
+	device_info->mqtt_key = (mqtt_key_info_t *)malloc(sizeof(mqtt_key_info_t));
+	memset(device_info->mqtt_key, 0, sizeof(mqtt_key_info_t));
+	device_info->mqtt_key->xQueue = xQueueCreate(10, 64);   //缩减10 512
+	if (device_info->mqtt_key->xQueue == NULL)
+		ESP_LOGW(TAG,"mqtt_key.xQueue create error!");
+
 	device_info->aliyun.xQueue = xQueueCreate(10, sizeof(mmqtt_msg_t));
 	if (device_info->aliyun.xQueue == NULL)
 		ESP_LOGW(TAG,"aliyun.xQueue create error!");
@@ -120,7 +126,16 @@ void param_config_init(void)
 	device_info->wifi.one_key_config.xQueue = xQueueCreate(10, 10);
 	if (device_info->wifi.one_key_config.xQueue == NULL)
 		ESP_LOGW(TAG,"one_key_config.xQueue create error!");
-	
+
+	// 打鼾干预初始化为
+	device_info->snore = (snore_intervention_t *) malloc(sizeof(snore_intervention_t));
+	memset(device_info->snore, 0, sizeof(snore_intervention_t));		
+	device_info->snore->snore_parameters.up_hold_time_s = UP_HOLD_TIME_S;
+	device_info->snore->snore_parameters.threshold_5s = THRESHOLD_5S;
+	device_info->snore->snore_parameters.threshold = THRESHOLD;
+	device_info->snore->snore_parameters.pwm = SNORING_PWM;
+	device_info->snore->snore_parameters.tmr = SNORING_TMR;
+	device_info->snore->snore_state.block_size = 24;
 	//固件版本设置
 	memcpy(device_info->ota.running_version, INIT_VERSION, strlen(INIT_VERSION));
 
@@ -184,7 +199,16 @@ void config_store_to_flash(void)
 		ESP_ERROR_CHECK(nvs_get_str(nvs_config_handler, "wifiPasswd", out_value, &len));
 		memcpy(device_info->wifi.one_key_config.passwd, out_value, len);
 
-
+		size_t snore_param_size = sizeof(snore_parameters_t);
+        esp_err_t err = nvs_get_blob(nvs_config_handler, "snore_param",  &device_info->snore->snore_parameters, &snore_param_size);
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "no snore_param in flash, using default values");
+        }
+        else
+        {
+            ESP_LOGI(TAG, "snore param loaded from flash");
+        }
 		// memcpy(device_info->wifi.one_key_config.ssid, "kakakaka", 9);
 		// memcpy(device_info->wifi.one_key_config.passwd, "77885522", 9);
 
@@ -213,7 +237,7 @@ void config_store_to_flash(void)
 		memcpy(device_info->ota.running_version, out_value, len);
 		len = sizeof(out_value);
 
-		esp_err_t err = nvs_get_str(nvs_config_handler, "report", out_value, &len);
+		err = nvs_get_str(nvs_config_handler, "report", out_value, &len);
 		if (nvs_config_handler == NULL) {ESP_LOGE("NVS", "NVS handler is not initialized!");}	
 		if (err != ESP_OK) {ESP_LOGE("NVS", "Error getting 'report' string: %s", esp_err_to_name(err));} 
 		else {ESP_LOGI("NVS", "String length: %d, Retrieved string: %s", len, out_value);}
@@ -224,6 +248,12 @@ void config_store_to_flash(void)
 		// strcpy(device_info->report,"29 2023-12-31 13:13:51 559");
 
 		ESP_LOGI(TAG, "report= %s", device_info->report); 
+		printf("snore: up_hold_time_s = %d, threshold_5s = %d, threshold = %d, pwm = %d, tmr = %d\n",
+																									device_info->snore->snore_parameters.up_hold_time_s,
+																									device_info->snore->snore_parameters.threshold_5s,
+																									device_info->snore->snore_parameters.threshold,
+																									device_info->snore->snore_parameters.pwm,
+																									device_info->snore->snore_parameters.tmr);
 
 		ESP_LOGI(TAG, "read nvs config ok... \n");
 	}
@@ -233,6 +263,15 @@ void config_store_to_flash(void)
 		ESP_ERROR_CHECK(nvs_set_str(nvs_config_handler, "wifiSsid", device_info->wifi.one_key_config.ssid));
 		ESP_ERROR_CHECK(nvs_set_str(nvs_config_handler, "wifiPasswd", device_info->wifi.one_key_config.passwd));
 
+
+		ESP_LOGI(TAG, "write default snore param to flash...");
+        ESP_ERROR_CHECK(nvs_set_blob(nvs_config_handler, "snore_param",  &device_info->snore->snore_parameters, sizeof(snore_parameters_t)));
+		printf("snore: up_hold_time_s = %d, threshold_5s = %d, threshold = %d, pwm = %d, tmr = %d\n",
+																									device_info->snore->snore_parameters.up_hold_time_s,
+																									device_info->snore->snore_parameters.threshold_5s,
+																									device_info->snore->snore_parameters.threshold,
+																									device_info->snore->snore_parameters.pwm,
+																									device_info->snore->snore_parameters.tmr);
 //阿里云三元素不再转存到flash
 		// ESP_ERROR_CHECK(nvs_set_str(nvs_config_handler, "id", device_info->id));
 		// ESP_ERROR_CHECK(nvs_set_str(nvs_config_handler, "iotKey", device_info->aliyun.product_key));
