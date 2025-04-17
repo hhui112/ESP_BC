@@ -150,6 +150,34 @@ unsigned char syncCalcCheckSum(void)
 }
 
 
+void  Debug_printf_buff(uint8_t *buff ,uint16_t len)
+{
+	int i = 0;
+	printf("\r\n");
+	for(i = 0; i < len ;i++)
+	{
+		printf("%02X ",buff[i]);
+	}
+	printf("\r\n");
+}
+
+
+/*  
+*   封装的 mfp发送函数，使用全局变量进行发送，需将要发送的数据填入全局变量中
+*   uart_write_bytes(ECHO_UART_PORT_NUM, g_Sync_TX.rawData, g_Sync_TX.Syncdata.length+3);
+*/
+void mfp_dateSend(void)
+{   
+    printf("mfp_dateSend\n");
+    Debug_printf_buff(g_Sync_TX.rawData,g_Sync_TX.Syncdata.length+3);
+    uart_flush(ECHO_UART_PORT_NUM);
+    gpio_set_level(UART_CTR, 0);
+    vTaskDelay(1 / portTICK_PERIOD_MS);
+    uart_write_bytes(ECHO_UART_PORT_NUM, g_Sync_TX.rawData, g_Sync_TX.Syncdata.length+3);
+    uart_wait_tx_done(ECHO_UART_PORT_NUM, pdMS_TO_TICKS(10));
+    gpio_set_level(UART_CTR, 1);
+}
+
 /*  SPI设置 万一以后要用
 
 #define SPI_HOST1    HSPI_HOST

@@ -563,7 +563,7 @@ void aliyun_mqtt_server(void)
     //个人阿里云
     // sprintf(mqtt_connect_aliyun_url, "%s.iot-as-mqtt.cn-shanghai.aliyuncs.com", device_info->aliyun.product_key);    //product_host
     //企业阿里云
-    strcpy(mqtt_connect_aliyun_url, "192.168.107.63");    //iot-060a3upv.mqtt.iothub.aliyuncs.com
+    strcpy(mqtt_connect_aliyun_url, "iot-060a3upv.mqtt.iothub.aliyuncs.com");    //iot-060a3upv.mqtt.iothub.aliyuncs.com   192.168.232.63
 
     // aiotMqttSign(device_info.product_key, device_info.product_id, device_info.device_secret, clientid, username, password);
     aiotMqttSign(device_info->aliyun.product_key, device_info->aliyun.device_id, device_info->aliyun.device_secret, clientid, username, password);

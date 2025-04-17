@@ -62,4 +62,5 @@ void check_report_and_up_to_aliyun(void);   //xinzeng
 void set_mode_flag_config(uint8_t data);
 uint8_t get_mode_flag_config(void);
 extern bool mqtt_send_mutex;
+int mqtt_ble_data_parser_cb(uint8_t *data);
 #endif

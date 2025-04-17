@@ -110,14 +110,17 @@
 #define KEY_FLAT_MASSAGESTOP      (KEY_ALLFATE|KEY_MASSAGE_STOP_ALL)
 
 // 打鼾干预
-#define BLOCK_BUFFER_SIZE   24      // 2分钟内，共24次更新（每5秒一次）
-#define SNORING_THRESHOLD   15      // 2分钟内打鼾阈值
-#define SNORING_THRESHOLD_5S 4      // 5秒内打鼾阈值
-#define SNORE_COOLDOWN_SECONDS 1800  // 打鼾干预持续时间 30分钟=1800秒
+#define BLOCK_BUFFER_SIZE           24      // 2分钟内，共24次更新（每5秒一次）
+#define SNORING_THRESHOLD           15      // 2分钟内打鼾阈值
+#define SNORING_THRESHOLD_5S        4       // 5秒内打鼾阈值
+#define SNORE_COOLDOWN_SECONDS      1800    // 打鼾干预持续时间 30分钟=1800秒
 
-
-
-
+#define  UP_HOLD_TIME_S             1800    // 打鼾干预持续时间 30分钟=1800秒
+#define  UP_HOLD_TIME_S_DEMO        120      // 打鼾演示流程冷却时间（秒）
+#define  THRESHOLD_5S               1       // 5秒有一个打鼾包就判断为该包打鼾
+#define  THRESHOLD                  15      // 2分钟内打鼾包阈值 2分钟15个则判断为打鼾 进行打鼾干预
+#define  SNORING_PWM                80      // 打鼾干预PWM值 （速度）
+#define  SNORING_TMR                20      // 打鼾演示流程抬起时间（时间 s） 
 
 enum 
 {
@@ -209,154 +212,17 @@ typedef struct
     data_rec_t data_rec;
 }ble_link_info_t;
 
-//mqtt接收键值参数定义
-typedef struct
-{
-    bool flag;
-    QueueHandle_t xQueue;
-    mqtt_key_rec_t data_rec;
-    
-}mqtt_key_info_t;
-
-typedef struct
-{
-    wifi_link_info_t wifi;
-    ble_link_info_t *ble;
-    ota_info_t ota;
-    aliyun_link_info_t aliyun;
-    utc_info_t utc;
-    mqtt_key_info_t *mqtt_key;
-    uint8_t data_up_switch;
-    char report[128];
-    char id[20];
-} device_info_t;
-
 /* 485数据结构 */
 #pragma pack(1)
-/*
-typedef struct
-{
-    uint8_t mqtt_data_flag;                     // 存在mqtt数据
-    uint8_t head;                               // 头部
-    uint8_t length;                             // data数据长度 0 1 2 3 我自己定的与下面 0+cmd+subcmd不一样
-    uint8_t cmd;                                // 命令
-    uint8_t subcmd;                             // 子命令
-    uint8_t data[16];                              // 数据区域
-} mqtt_control_t;
-
-typedef struct {
-    uint16_t sw_ver;      // 主控盒版软件本号
-    uint16_t hw_ver;      // 主控盒版硬件本号
-    uint16_t rc_ver;      // 遥控器版本号
-
-    uint8_t stretch_mode; // 拉伸模式状态 11
-
-    uint8_t wh_state;     // 腰部加热垫状态
-    uint8_t wh_temp;      // 腰部加热垫温度
-    uint8_t wh_level;     // 腰部加热垫档位 14
-    uint8_t wh_err;       // 腰部加热垫故障码
-
-    uint8_t lh_state;     // 腿部加热垫状态 
-    uint8_t lh_temp;      // 腿部加热垫温度
-    uint8_t lh_level;     // 腿部加热垫档位 18
-    uint8_t lh_err;       // 腿部加热垫故障码
-
-    uint8_t sh_adapt_level;     // 肩部自适应强度等级 20
-    uint8_t sh_pump;      // 肩部气磅开关
-    uint8_t sh_valve;     // 肩部气阀开关
-    uint16_t sh_pressure; // 肩部气压值
-
-    uint8_t wh_adapt_level;  // 腰部自适应强度等级 25
-    uint8_t wh_pump;         // 腰部气磅开关
-    uint8_t wh_valve;        // 腰部气阀开关
-    uint16_t wh_pressure;    // 腰部气压值
-
-    uint8_t mcbox_status;    // 主控盒状态 30
-    uint8_t off_bed;        // 在离床状态 0/1 31
-
-} ControlBox_Info_t;
-
-union SyncCommunicationData_t
-{
-    struct
-    {
-        uint8_t head;                               // 头部
-        uint8_t length;                             // 数据长度（Cmd + Subcmd + Data）0+2
-        uint8_t cmd;                                // 命令
-        uint8_t subcmd;                             // 子命令
-        uint8_t data[512];                          // 数据区域
-    } Syncdata;
-
-    struct
-    {
-        uint8_t head;                               // 头部
-        uint8_t length;                             // 数据长度（Cmd + Subcmd + Data）2 + 27
-        uint8_t cmd;                                // 命令
-        uint8_t subcmd;                             // 子命令
-
-        struct 
-        {
-            uint16_t sw_ver;      // 主控盒软件版本号
-            uint16_t hw_ver;      // 主控盒硬件版本号
-            uint16_t rc_ver;      // 遥控器版本号
-            uint8_t stretch_mode; // 拉伸模式状态
-            uint8_t wh_state;     // 腰部加热垫状态
-            uint8_t wh_temp;      // 腰部加热垫温度
-            uint8_t wh_level;     // 腰部加热垫档位
-            uint8_t wh_err;       // 腰部加热垫故障码
-            uint8_t lh_state;     // 腿部加热垫状态
-            uint8_t lh_temp;      // 腿部加热垫温度
-            uint8_t lh_level;     // 腿部加热垫档位
-            uint8_t lh_err;       // 腿部加热垫故障码
-            uint8_t sh_adapt_level;     // 肩部自适应强度等级
-            uint8_t sh_pump;      // 肩部气泵开关
-            uint8_t sh_valve;     // 肩部气阀开关
-            uint16_t sh_pressure; // 肩部气压值
-            uint8_t wh_adapt_level;  // 腰部自适应强度等级
-            uint8_t wh_pump;         // 腰部气泵开关
-            uint8_t wh_valve;        // 腰部气阀开关
-            uint16_t wh_pressure;    // 腰部气压值
-            uint8_t mcbox_status;    // 主控盒状态
-            uint8_t off_bed;         // 离床状态
-        } ControlBox_Info_t;
-
-        uint16_t crc;      // CRC 校验
-    } SyncdataUPload;  // 同步数据上传
-
-    uint8_t rawData[1024]; // 存储原始数据
-};
-*/
-union function_t
-{
-	struct
-	{
-		uint8_t reddat;
-		uint8_t	greendat;
-		uint8_t	bluedat;
-	} __attribute__ ((packed))rgbPacket;
-	struct
-	{
-		uint8_t ubl;
-		uint8_t	reserve1;
-		uint8_t	reserve2;
-	} __attribute__ ((packed))ublPacket;
-	struct
-	{
-		uint8_t heatstate;
-		uint8_t	mode;
-		uint8_t	reserve1;
-	} __attribute__ ((packed))heatPacket;
-}__attribute__ ((packed));
 
 struct asyncCtrlMode_t
 {
     uint8_t addr  			: 2;
     uint8_t mode  			: 2;
-    uint8_t strechMove	    : 2;
+    uint8_t strechMove	: 2;
     uint8_t music 			: 1;
-    uint8_t reserved 		: 1;
+    uint8_t reserved 		:1;
 } __attribute__ ((packed));
-
 
 union SyncCommunicationData_t
 {
@@ -376,17 +242,6 @@ union SyncCommunicationData_t
         uint8_t checksum;
     } __attribute__ ((packed)) PlugInPacket; // 插针数据
     
-    struct
-    {
-        unsigned char length;
-        unsigned char type;
-        unsigned long keys;       // 键值
-        unsigned char bright;     // 亮度
-        unsigned char dummy;
-        unsigned char cmd;
-        union function_t fun;
-        uint8_t checksum;
-    } __attribute__ ((packed)) funcPacket;
     
     struct
     {
@@ -483,7 +338,6 @@ union SyncCommunicationData_t
 };
 
 
-
 typedef struct
 {
     uint32_t check_err;        // 校验错误计数
@@ -535,38 +389,100 @@ union keys_t
 
 typedef struct
 {
-	union keys_t   key;   										//遥控器键值
-  	uint32_t keyTimeroOut;									    //无线键值超时时间
+	union   keys_t   key;   									// 遥控器键值
+  	uint32_t keyTimeroOut;									    // 无线键值超时时间
     uint8_t mfp_tx_ready;                                       // mfp发送准备标志 1可发送
     uint8_t mqtt_data_flag;                                     // mqtt数据标志 1有数据
     uint8_t snore_event_triggered;                              // 打鼾事件触发标志 1触发
+    uint8_t snore_event_triggered_demo;                         // 打鼾事件演示流程触发标志 1触发
 	uint8_t keys_type;                                          // 键值类型 0普通 1缓启动 2按摩枚举
-    uint8_t send_cnt;                                           // 发送计数 默认3次
+
+
+    uint8_t snore_trigger_flag;                              // 打鼾事件触发标志 1触发
+    uint8_t snore_trigger_flagdemo_flag;                     // 打鼾事件演示流程触发标志 1触发
+    uint8_t Key_send_flag;                                   // mqtt/BL 按键发送标志 1发送
+
 }g_system_flag_t; 
 
 
+typedef struct
+{
+    uint32_t  key;
+    uint8_t pwm;
+    uint8_t tmr;
+}g_keys_t;
+/*
+// 按键数据结构 包含：按键、PWM、时间
 typedef struct {
     uint32_t snore_last_event_time;
     bool     snore_in_progress;
     bool     snore_event_triggered;
+    bool     snore_event_triggered_demo;                        // 打鼾事件触发标志 演示流程
+    
     uint32_t snore_cooldown_period;                             // 打鼾冷却时间（秒）
+    uint32_t  snore_cooldown_period_demo;                        // 打鼾演示流程冷却时间（秒）s
 
-    uint8_t  snoring_block[BLOCK_BUFFER_SIZE];                 // 2 分钟打鼾检测数组
-    uint8_t  block_index;                                      // 打鼾检测数组索引
+    uint8_t  snoring_block[BLOCK_BUFFER_SIZE];                  // 2 分钟打鼾检测数组
+    uint8_t  block_index;                                       // 打鼾检测数组索引
 
-    uint8_t  block_size;                        // 2分钟的检测窗口（默认24） 120/5=24
-    uint8_t  snoring_threshold;                 // 2分钟打鼾包阈值（默认15） 2分钟内有15包打鼾包则判断为打鼾   
-    uint8_t  snoring_threshold_5s;              // 5秒内打鼾包判断阈值（默认4）5个里面4个是打鼾状态则这包判断为打鼾包
+    uint8_t  block_size;                                        // 2分钟的检测窗口（默认24） 120/5=24
+    uint8_t  snoring_threshold;                                 // 2分钟打鼾包阈值（默认15） 2分钟内有15包打鼾包则判断为打鼾   
+    uint8_t  snoring_threshold_5s;                              // 5秒内打鼾包判断阈值（默认4）5个里面4个是打鼾状态则这包判断为打鼾包
 
-    uint8_t  snore_pwm_default;                 // 默认PWM值
-    uint8_t  snore_tmr_default;                 // 默认时间值
+    g_keys_t snore_keys;
+} snore_intervention_t;
+*/
+
+typedef struct {
+    uint32_t up_hold_time_s;            // 打鼾冷却时间（秒）
+    uint8_t threshold;                  // 2分钟打鼾包阈值
+    uint8_t threshold_5s;               // 5秒内打鼾包判断阈值
+    uint8_t pwm;                        // 缓启动速度
+    uint8_t tmr;                        // 缓启动时间                      
+} snore_parameters_t;
+
+typedef struct {
+    uint32_t last_triggered_time_s;                 // 上次触发时间
+    bool     is_intervening;                        // 打鼾干预中
+    bool     triggered_flag;                        // 触发
+    bool     triggered_flag_demo;                   // 演示触发
+
+    uint8_t  snoring_block[BLOCK_BUFFER_SIZE];      // 2分钟打鼾检测数组
+    uint8_t  block_index;                    
+    uint8_t  block_size;                            // 检测窗口大小
+} snore_state_t;
+
+typedef struct {
+    snore_parameters_t snore_parameters;
+    snore_state_t snore_state;
 } snore_intervention_t;
 
 
 #pragma pack()
 
 
+//mqtt接收键值参数定义
+typedef struct
+{
+    bool flag;
+    QueueHandle_t xQueue;
+    mqtt_key_rec_t data_rec;
+    g_keys_t mqtt_keys;
+}mqtt_key_info_t;
 
+typedef struct
+{
+    wifi_link_info_t wifi;
+    ble_link_info_t *ble;
+    ota_info_t ota;
+    aliyun_link_info_t aliyun;
+    utc_info_t utc;
+    mqtt_key_info_t *mqtt_key;
+    snore_intervention_t *snore;
+    uint8_t data_up_switch;
+    char report[128];
+    char id[20];
+} device_info_t;
 
 
 void device_init(void);
