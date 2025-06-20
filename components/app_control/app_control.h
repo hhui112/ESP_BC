@@ -63,4 +63,5 @@ void set_mode_flag_config(uint8_t data);
 uint8_t get_mode_flag_config(void);
 extern bool mqtt_send_mutex;
 int mqtt_ble_data_parser_cb(uint8_t *data);
+void check_stack_space(void);
 #endif

@@ -3,4 +3,5 @@
 cmake_minimum_required(VERSION 3.5)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# set(CMAKE_EXE_LINKER_FLAGS "-Wl,-Map=output.map")
 project(bochuang-program)

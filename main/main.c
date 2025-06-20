@@ -49,5 +49,5 @@ void app_main(void)
   initialize_wifi();            //wifi初始化
   mfp_gpio_config();
   app_control_server();           //app通信控制系统
-  
+
 }
