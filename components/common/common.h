@@ -29,7 +29,7 @@
 #define DEVEICE_ID                                  "KSPSBED00001057"
 #define PRODUCT_KEY                                 "ixvaCaIfGla"
 #define DEVEICE_SECRET                              "fd3e5207b753226032a602f2b7c44804"
-#define INIT_VERSION                                "BC_ESP_2025_2_0_0"//"PS_20230906_0_0_1"        old :BC_ESP_2023_0_1_5  news: BC_ESP_2025_1_0_1
+#define INIT_VERSION                                "BC_ESP_2025_2_1_3"//"PS_20230906_0_0_1"        old :BC_ESP_2023_0_1_5  news: BC_ESP_2025_1_0_1
 // #define CINFIG_VERSION                              "settingConfig_001" 
 
 #define UART1_TXD                                   (22)
@@ -48,10 +48,19 @@
 #define UART_TX_BUF_SIZE                            1024                                         /**< UART TX buffer size. */
 #define UART_RX_BUF_SIZE                            1024 
 
-
-/*-----------板子型号------------------------*/
 #define BOARD_MC232  1
-#define MOTOR_NUM    3 
+#define BOARD_MC242  2
+/*-----------板子型号------------------------*/
+#define BOARD BOARD_MC242
+
+#if BOARD == BOARD_MC232
+    #define MOTOR_NUM      3
+    #define REPORT_DATA_FMT "MC232_DATA"    // MC232 的数据格式
+#elif BOARD == BOARD_MC242
+    #define MOTOR_NUM      4
+    #define REPORT_DATA_FMT "MC242_DATA"     // MC242 的数据格式
+#endif
+
 
 // 普通按键键值
 #define		KEY_MOTOR_STOP					0x00000000	
@@ -98,6 +107,8 @@
 #define   KEY_FLAT_ZEROG      		(KEY_ZEROG|KEY_ALLFATE)
 #define 	KEY_MASSAGE_LED			(KEY_UBB|KEY_MASSAGE_HEAD_MINUS|KEY_MASSAGE_FEET_MIUNS|KEY_MASSAGE_STOP_ALL|KEY_MASSAGE_MODE|KEY_MASSAGE_All|KEY_MASSAGE_TIMER|KEY_MASSAGE_FEET|KEY_MASSAGE_HEAD)
 #define   KEY_SET_AB                (KEY_M1_OUT|KEY_M1_IN|KEY_M2_OUT|KEY_M2_IN)
+#define   KEY_BED_UP                (KEY_M4_OUT|KEY_M3_OUT)
+#define   KEY_BED_IN                (KEY_M4_IN|KEY_M3_IN)
 
 // 按键类型
 #define   KEYS_TYPE_NORMAL          0    // 普通键值
@@ -112,7 +123,7 @@
 // 打鼾干预
 #define BLOCK_BUFFER_SIZE           24      // 2分钟内，共24次更新（每5秒一次）
 #define SNORING_THRESHOLD           15      // 2分钟内打鼾阈值
-#define SNORING_THRESHOLD_5S        4       // 5秒内打鼾阈值
+#define SNORING_THRESHOLD_5S        1       // 5秒内打鼾阈值
 #define SNORE_COOLDOWN_SECONDS      1800    // 打鼾干预持续时间 30分钟=1800秒
 
 #define  UP_HOLD_TIME_S             1800    // 打鼾干预持续时间 30分钟=1800秒
@@ -130,6 +141,12 @@ enum
     mqtt_fail,
 }one_key_config_wifi_event_id_t;
 
+typedef enum {
+    WIFI_STATUS_WAITING = 0,     // 等待连接
+    WIFI_STATUS_CONNECTED = 1,   // 连接成功
+    WIFI_STATUS_RECONNECTING = 2,// 重连中
+    WIFI_STATUS_FAILED = 3       // 重连失败，超过次数
+} wifi_status_t;
 
 //一键配网参数定义
 typedef struct
@@ -166,7 +183,7 @@ typedef struct
 {
     one_key_config_wifi_info_t one_key_config;         
     char ip_addr[16];                                               //ip地址
-    int rssi;                                               //wifi信号强度
+    int rssi;                                                       //wifi信号强度
     uint8_t flag;                                                     
 }wifi_link_info_t;
 
@@ -286,13 +303,14 @@ union SyncCommunicationData_t
         uint8_t checksum;
     } __attribute__ ((packed)) PlugInPacket_MASSAGE; // 博创插针数据 按摩枚举
 
+#if BOARD == BOARD_MC242
     struct
     {
-        uint8_t length;                           // 数据长度：length + 3（包含type、checkSum、length）
+        uint8_t length;                           // 数据长度：length + 3（包含length + type + checkSum）
         uint8_t type;                             // 数据类型，固定为0x07 
         uint32_t keys;                            // 键值
         uint8_t ledData[5];                       // LED数据
-        uint8_t UBB           : 1;                // UBB状态
+        uint8_t UBB           : 1;                // UBB状态（床底灯状态）
         uint8_t stopAll       : 1;                // 停止所有标志位，1表示停止，0表示运行
         uint8_t automaticMovementIsActive : 1;    // 自动运动激活标志，1表示自动运动
         uint8_t sync          : 1;                // 同步标志
@@ -300,6 +318,7 @@ union SyncCommunicationData_t
         uint8_t angleAdj      : 1;                // 角度调节标志位，1表示左侧调节，0表示右侧调节
         uint8_t factoryMode   : 1;                // 工厂模式，1表示工厂模式，0表示正常模式
         uint8_t addr          : 1;                // 设备地址，用于区分多个设备           12
+
         uint8_t massage_status[2];                // 按摩状态（按摩模式和力度）
         uint32_t massageTimer;                    // 按摩计时器，单位10ms               18
         uint16_t pulseCounter[MOTOR_NUM];         // 脉冲计数，根据电机数量（当前支持2/3/4个） 24
@@ -307,19 +326,61 @@ union SyncCommunicationData_t
         uint16_t U_div_2;                         // 电压分压值32
         uint16_t massageCurrent;                  // 按摩电流34
         uint16_t mfpCurrent;                      // mfp电流36
-        uint8_t  dummy[2];                        // 保留字节38
+
+        uint8_t  dummy[2];                        // 保留字节38  (uint16_t selfcheck;)
         uint8_t  slow_pwm;                        // 慢速PWM
         uint8_t  slow_timer;                      // 慢速定时器 40
         uint8_t  bedtype;                         // 按摩床类型
         struct asyncCtrlMode_t asyncCtrlFrame;    // 异步控制帧 42
         uint8_t heating;                          // 加热标志位
-        uint8_t aromaswitch;                      // 香薰开关标志位
+        uint8_t aromaswitch;                      // 香薰开关标志位/感应灯开关标志位 
         uint8_t rgb;                              // RGB灯状态
         uint8_t reddata;                          // 红色数据，范围0~255
         uint8_t greendata;                        // 绿色数据，范围0~255
         uint8_t bluedata;                         // 蓝色数据，范围0~255
-        uint8_t massge_mode;                      // 按摩模式
-        uint8_t brightness;                       // 普通模式下的亮度，范围0~255  50
+        uint8_t massge_mode;                      // 按摩模式     [49]
+        uint8_t brightness;                       // 普通模式下的亮度，范围0~255  50（床底灯亮度）
+  
+        uint8_t checkSum;                          // 53 57  61
+    } __attribute__ ((packed)) syncPacket;
+
+#elif BOARD == BOARD_MC232 
+    struct
+    {
+        uint8_t length;                           // 数据长度：length + 3（包含length + type + checkSum）
+        uint8_t type;                             // 数据类型，固定为0x07 
+        uint32_t keys;                            // 键值
+        uint8_t ledData[5];                       // LED数据
+        uint8_t UBB           : 1;                // UBB状态（床底灯状态）
+        uint8_t stopAll       : 1;                // 停止所有标志位，1表示停止，0表示运行
+        uint8_t automaticMovementIsActive : 1;    // 自动运动激活标志，1表示自动运动
+        uint8_t sync          : 1;                // 同步标志
+        uint8_t lock          : 1;                // 锁定标志
+        uint8_t angleAdj      : 1;                // 角度调节标志位，1表示左侧调节，0表示右侧调节
+        uint8_t factoryMode   : 1;                // 工厂模式，1表示工厂模式，0表示正常模式
+        uint8_t addr          : 1;                // 设备地址，用于区分多个设备           12
+
+        uint8_t massage_status[2];                // 按摩状态（按摩模式和力度）
+        uint32_t massageTimer;                    // 按摩计时器，单位10ms               18
+        uint16_t pulseCounter[MOTOR_NUM];         // 脉冲计数，根据电机数量（当前支持2/3/4个） 24
+        int16_t  current[MOTOR_NUM];              // 电流值，根据电机数量（当前支持2/3/4个）30
+        uint16_t U_div_2;                         // 电压分压值32
+        uint16_t massageCurrent;                  // 按摩电流34
+        uint16_t mfpCurrent;                      // mfp电流36
+
+        uint8_t  dummy[2];                        // 保留字节38  (uint16_t selfcheck;)
+        uint8_t  slow_pwm;                        // 慢速PWM
+        uint8_t  slow_timer;                      // 慢速定时器 40
+        uint8_t  bedtype;                         // 按摩床类型
+        struct asyncCtrlMode_t asyncCtrlFrame;    // 异步控制帧 42
+        uint8_t heating;                          // 加热标志位
+        uint8_t aromaswitch;                      // 香薰开关标志位/感应灯开关标志位 
+        uint8_t rgb;                              // RGB灯状态
+        uint8_t reddata;                          // 红色数据，范围0~255
+        uint8_t greendata;                        // 绿色数据，范围0~255
+        uint8_t bluedata;                         // 蓝色数据，范围0~255
+        uint8_t massge_mode;                      // 按摩模式     [49]
+        uint8_t brightness;                       // 普通模式下的亮度，范围0~255  50（床底灯亮度）
 
         uint8_t reserve_1;                        //预留,0x00
         uint8_t Gemini_flag;                      //双子星标志,0x00
@@ -330,9 +391,10 @@ union SyncCommunicationData_t
         uint8_t M4_position :2;                   //预留
         uint8_t M2_position :2;                   //脚，兼容老版本
         uint8_t M3_position :2;                   //腰，预留
-                                                  //电机位置，0：底部；1：顶部；2：中部     
+                                            //电机位置，0：底部；1：顶部；2：中部     
         uint8_t checkSum;                          // 53 57  61
     } __attribute__ ((packed)) syncPacket;
+#endif
 
     uint8_t rawData[UART_RX_BUF_SIZE];
 };

@@ -38,6 +38,8 @@
 #include "esp_attr.h"
 #include "use_ota.h"
 #include "app_control.h"
+#include "esp_task_wdt.h"
+
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
 #define MAXIMUM_RETRY_WIFI (5)
@@ -57,6 +59,9 @@ char mqtt_connect_aliyun_url[64] = {0};
 char mc_cli_data_subscribe_topic[64] = {0};
 char mc_cli_data_publish_topic[64] = {0};
 
+extern char last_saved_ssid[32];
+extern char last_saved_passwd[64];
+
 static const char *TAG = "wifi station";
 int s_retry_num = 0;
 static EventGroupHandle_t s_wifi_event_group;
@@ -71,6 +76,8 @@ uint8_t wifi_link_event_id;
 wifi_config_t wifi_config = {
     .sta = {
         .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+        .threshold.rssi = -80,                      // 信号强度阈值：-80db
+        .scan_method = WIFI_ALL_CHANNEL_SCAN,       // 强制全信道扫描
         .pmf_cfg = {
             .capable = true,
             .required = false},
@@ -89,50 +96,35 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     //wifi断开
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
-/*有重连次数限制
-        if (s_retry_num < 10)   //重连次数上限
-        {
+            ESP_LOGW(TAG, "WiFi disconnected, reason: %d", ((wifi_event_sta_disconnected_t *)event_data)->reason);
+            ESP_LOGI(TAG, "Connecting to SSID: %s", (const char *)wifi_config.sta.ssid);
+            ESP_LOGI(TAG, "With Password: %s", (const char *)wifi_config.sta.password);
+
+            vTaskDelay(2000 / portTICK_PERIOD_MS); // 2 秒后重试
             esp_wifi_connect();
             s_retry_num++;
-            set_wifi_status(2);
+            set_wifi_status(WIFI_STATUS_RECONNECTING);
             ESP_LOGI(TAG, "retry to connect to the AP,num %d",s_retry_num);
-        }
-        else
-        {
-            set_wifi_status(3);
-            if(get_one_key_config_wifi_status())
-            {
-                wifi_link_event_id = wifi_fail;
-                BaseType_t xStatus = xQueueSend(device_info->wifi.one_key_config.xQueue, &wifi_link_event_id, 0);
-                if (xStatus != pdPASS)
-                {
-                    printf("Could not send to the queue.\r\n");
-                }
-                set_one_key_config_wifi_status(0);
-            }
-            ESP_LOGI(TAG, "connect to the AP fail");
-        }
-******/
-
-
-/*无重连次数限制*/
-            esp_wifi_connect();
-            s_retry_num++;
-            set_wifi_status(2);
-            ESP_LOGI(TAG, "retry to connect to the AP,num %d",s_retry_num);
-/********/
-
     }
-    //wifi连接成功，获取ip地址
+
+    // 新增：丢失 IP 地址，IP 地址重置为 0 则断开
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_LOST_IP)
+    {
+        ESP_LOGW(TAG, "Lost IP address. Trying to reconnect...");
+        esp_wifi_disconnect();
+    }
+    //wifi连接/获取ip地址成功
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
         ESP_LOGI(TAG, "connected");
-        set_wifi_status(1);
+        set_wifi_status(WIFI_STATUS_CONNECTED);
         esp_mqtt_client_start(client);   //开始连接mqtt
-        if(get_one_key_config_wifi_status())
+        if (get_one_key_config_wifi_status() ||
+            strcmp((char *)last_saved_ssid, (char *)device_info->wifi.one_key_config.ssid) != 0 ||
+            strcmp((char *)last_saved_passwd, (char *)device_info->wifi.one_key_config.passwd) != 0)
         {
             wifi_link_event_id = wifi_ok;
             BaseType_t xStatus = xQueueSend(device_info->wifi.one_key_config.xQueue, &wifi_link_event_id, 0);
@@ -147,9 +139,13 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 		    ESP_ERROR_CHECK(nvs_set_str(nvs_config_handler, "wifiPasswd", device_info->wifi.one_key_config.passwd));
             ESP_ERROR_CHECK(nvs_commit(nvs_config_handler));
 	        nvs_close(nvs_config_handler);
+            strncpy(last_saved_ssid, (char *)device_info->wifi.one_key_config.ssid, sizeof(last_saved_ssid));
+            strncpy(last_saved_passwd, (char *)device_info->wifi.one_key_config.passwd, sizeof(last_saved_passwd));
+            printf("last_saved_ssid = %s\r\n",last_saved_ssid);
         }
     }
 }
+
 
 //mqtt操作函数
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
@@ -169,7 +165,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     {
     // 建立连接成功
     case MQTT_EVENT_CONNECTED:
-        printf("MQTT_client cnnnect to EMQ ok. \n");
+        printf("MQTT_client cnnnect ok. \n");
         if(get_one_key_config_wifi_status())
         {
            
@@ -193,9 +189,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         sprintf(ota_upgrade_subscribe_topic,  "/ota/device/upgrade/%s/%s",device_info->aliyun.product_key, device_info->aliyun.device_id);
         sprintf(ota_infor_publish_topic,  "/ota/device/inform/%s/%s",device_info->aliyun.product_key, device_info->aliyun.device_id);
 
-        sprintf(mc_cli_data_subscribe_topic, "/%s/%s/mc/cli/get", device_info->aliyun.product_key, device_info->aliyun.device_id);
-        sprintf(mc_cli_data_publish_topic, "/%s/%s/mc/cli/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
-
+        sprintf(mc_cli_data_subscribe_topic, "/%s/%s/user/cli/get", device_info->aliyun.product_key, device_info->aliyun.device_id);
+        sprintf(mc_cli_data_publish_topic, "/%s/%s/user/mccli/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
         printf("%s\n", user_5s_data_publish_topic);
         printf("%s\n", user_60s_data_publish_topic);
         printf("%s\n", user_sa_data_publish_topic);
@@ -203,12 +198,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         printf("%s\n", ota_infor_publish_topic);
         printf("%s\n", mc_cli_data_subscribe_topic);
         printf("%s\n", mc_cli_data_publish_topic);
-        
         printf("%s\n", user_cli_data_subscribe_topic);
-        esp_mqtt_client_subscribe(client, user_cli_data_subscribe_topic, 0);   //订阅服务
+        esp_mqtt_client_subscribe(client, user_cli_data_subscribe_topic, 0);   //订阅服务 
         esp_mqtt_client_subscribe(client, ota_upgrade_subscribe_topic, 0);
-        esp_mqtt_client_subscribe(client, mc_cli_data_subscribe_topic, 0);
-      
+        //esp_mqtt_client_subscribe(client, mc_cli_data_subscribe_topic, 0);
         if (device_info->ota.flag)    //ota版本上传服务
         {
             // firstItem = cJSON_CreateObject();
@@ -252,7 +245,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             {
                 printf("Could not send to the queue.\r\n");
             }
-            set_one_key_config_wifi_status(0);
+            // set_one_key_config_wifi_status(0); // 不需要 1. MQTT 断开不能说明 WiFi 参数是有效的,设置为0代表不用保存wifi密码导致
         }
 
         //断开wifi，重新连接
@@ -270,17 +263,17 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     // 主题订阅成功
     case MQTT_EVENT_SUBSCRIBED:
         // printf("mqtt subscribe ok. msg_id = %d \n",event->msg_id);
-        printf("MQTT_client3");
+        //printf("MQTT_client3");
         break;
     // 取消订阅
     case MQTT_EVENT_UNSUBSCRIBED:
         // printf("mqtt unsubscribe ok. msg_id = %d \n",event->msg_id);
-        printf("MQTT_client4");
+        // printf("MQTT_client4");
         break;
     //  主题发布成功
     case MQTT_EVENT_PUBLISHED:
         // printf("mqtt published ok. msg_id = %d \n",event->msg_id);
-        printf("MQTT_client5");
+        // printf("MQTT_client5");
         break;
     // 已收到订阅的主题消息
     case MQTT_EVENT_DATA:
@@ -450,6 +443,43 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             esp_mqtt_client_publish(client, user_cli_data_publish_topic, (char *)temp, strlen((char *)temp), 0, 0);
                        }
                        
+                    }else if(secondItem && strstr(secondItem->valuestring, "mcCli"))
+                    {
+                        printf("mqtt mqtt received to: mcCli\n");
+                        if(get_devic_id_flag() == 0)
+                        {
+                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"no sensor id,wait two min again\"}", 
+                                device_info->id,
+                                device_info->utc.time_stamp,
+                                secondItem->valuestring);
+                            esp_mqtt_client_publish(client, user_cli_data_publish_topic, (char *)temp, strlen((char *)temp), 0, 0);      
+                        }else
+                        {
+                            secondItem = cJSON_GetObjectItem(firstItem, "cmd");
+                            printf("I mqtt mc cil:secondItem = %s\n",secondItem->valuestring);
+                            if (secondItem) 
+                            {
+                                const char *cmd_str = secondItem->valuestring;  
+                                int cmd_len = 0;
+                                // 每2个字符转换为一个字节
+                                while (*cmd_str && *(cmd_str + 1) && (cmd_len < 64)) {
+                                    char byte_str[3] = { cmd_str[0], cmd_str[1], '\0' };
+                                    cmd_bin[cmd_len++] = (uint8_t)strtol(byte_str, NULL, 16);
+                                    cmd_str += 2;
+                                }
+                                // 将转换后的数据通过队列发送出去
+                                if (cmd_len > 0 && cmd_bin[0] == 0xAA) 
+                                {
+                                    for(int i=0;i<cmd_len;i++){printf("%02X ",cmd_bin[i]);}printf("\n\n");
+
+                                    if (xQueueSend(device_info->mqtt_key->xQueue, cmd_bin, 0) != pdPASS) {
+                                        printf("Queue send failed.\r\n");
+                                    }
+                                }else{
+                                    printf("mqtt head error\n");
+                                }
+                            }
+                        }
                     }                    
                 }
                 else{
@@ -460,7 +490,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             else{
                 printf("cJSON_Parse wrong\n");
             }   
-        }else if (msg&&strstr(msg->topic, mc_cli_data_subscribe_topic))
+        }   
+ /*     else if (msg&&strstr(msg->topic, mc_cli_data_subscribe_topic))
         {
             firstItem = cJSON_Parse((char *)msg->data);
             printf("%s\n", msg->data);
@@ -507,6 +538,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             }
                         }
                     }
+                  
                 }
                 else{
                     printf("cJSON_Parse id wrong\n");
@@ -517,6 +549,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 printf("cJSON_Parse wrong\n");
             }   
         }
+*/  
         else if (msg&&strstr(msg->topic, ota_upgrade_subscribe_topic))
         {
             firstItem = cJSON_Parse((char *)msg->data);

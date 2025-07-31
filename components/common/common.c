@@ -23,6 +23,22 @@ device_info_t *device_info;
 qs_pb_msg_sensor_5sec_info *user_5s_sensor_info;
 qs_pb_msg_sensor_1min_info *user_60s_sensor_info;
 qs_pb_msg_sleep_apnea_info *user_sa_sensor_info;
+char last_saved_ssid[32] = {0};
+char last_saved_passwd[64] = {0};
+
+void print_nvs_usage()
+{
+    nvs_stats_t stats;
+    esp_err_t err = nvs_get_stats(NULL, &stats); // NULL 表示默认分区 16KB/32byte = 512 总共512个键值对
+    if (err == ESP_OK) {
+        printf("NVS usage:\n");
+        printf("  Used entries: %d\n", stats.used_entries);		// 已使用键值对
+        printf("  Free entries: %d\n", stats.free_entries);
+        printf("  Total entries: %d\n", stats.total_entries);
+    } else {
+        printf("Failed to get NVS stats: %s\n", esp_err_to_name(err));
+    }
+}
 
 uint8_t get_wifi_status(void)
 {
@@ -212,7 +228,10 @@ void config_store_to_flash(void)
 		// memcpy(device_info->wifi.one_key_config.ssid, "kakakaka", 9);
 		// memcpy(device_info->wifi.one_key_config.passwd, "77885522", 9);
 
-
+		// 读取成功后同步到last_saved变量
+		strncpy(last_saved_ssid, device_info->wifi.one_key_config.ssid, sizeof(last_saved_ssid));
+		strncpy(last_saved_passwd, device_info->wifi.one_key_config.passwd, sizeof(last_saved_passwd));
+        printf("In common last_saved_ssid = %s\r\n",last_saved_ssid);
 		ESP_LOGI(TAG, "ssid= %s, passwd = %s", device_info->wifi.one_key_config.ssid, device_info->wifi.one_key_config.passwd); 
 //阿里云三元素每次从.bin文件读取，不再从flash读取
 // #if ALIYUN_BURN		
@@ -288,8 +307,11 @@ void config_store_to_flash(void)
 		printf("nvs config update ok. \n");
 	}
 	ESP_ERROR_CHECK(nvs_commit(nvs_config_handler));
+	print_nvs_usage();
 	nvs_close(nvs_config_handler);
 
+	strncpy(last_saved_ssid, device_info->wifi.one_key_config.ssid, sizeof(last_saved_ssid));
+	strncpy(last_saved_passwd, device_info->wifi.one_key_config.passwd, sizeof(last_saved_passwd));
 	ESP_LOGI(TAG, "ssid= %s, passwd = %s", device_info->wifi.one_key_config.ssid, device_info->wifi.one_key_config.passwd);
 	ESP_LOGI(TAG, "otaFlag= %d, version = %s", device_info->ota.flag, device_info->ota.running_version);
 }
@@ -314,5 +336,6 @@ void device_init(void)
 	param_config_init();
 	config_store_to_flash();
 	led_init();
+	print_nvs_usage();
 	//set_one_key_config_wifi_status(1);
 }
