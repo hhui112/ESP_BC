@@ -19,8 +19,13 @@ uint16_t Modbus_Crc_Compute(const uint8_t *buf, uint16_t bufLen);
 uint16_t crc16_check(const uint8_t *buf, uint16_t bufLen);
 unsigned char rxCalcCheckSum(void);
 unsigned char syncCalcCheckSum(void);
+uint8_t syncCalcCheckSum_mfpqueue(const uint8_t *data, uint8_t len);
+
 void mfp_dateSend(void);
 void  Debug_printf_buff(uint8_t *buff ,uint16_t len);
+
+void uart_mfp_send(const uint8_t *data, size_t len);
+
 
 /*
 void spi_init(void);

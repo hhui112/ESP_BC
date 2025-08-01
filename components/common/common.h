@@ -29,7 +29,7 @@
 #define DEVEICE_ID                                  "KSPSBED00001057"
 #define PRODUCT_KEY                                 "ixvaCaIfGla"
 #define DEVEICE_SECRET                              "fd3e5207b753226032a602f2b7c44804"
-#define INIT_VERSION                                "BC_ESP_2025_2_1_3"//"PS_20230906_0_0_1"        old :BC_ESP_2023_0_1_5  news: BC_ESP_2025_1_0_1
+#define INIT_VERSION                                "BC_ESP_2025_2_1_7"//"PS_20230906_0_0_1"        old :BC_ESP_2023_0_1_5  news: BC_ESP_2025_1_0_1
 // #define CINFIG_VERSION                              "settingConfig_001" 
 
 #define UART1_TXD                                   (22)
@@ -473,6 +473,24 @@ typedef struct
     uint8_t pwm;
     uint8_t tmr;
 }g_keys_t;
+
+
+typedef struct
+{
+	uint32_t usartCheck_error;  			 //串口校验错误
+	uint32_t usartTimer_error;     		  // 串口接收数据超时次数
+} errorCode_t;
+
+typedef struct
+{
+	uint8_t  syncModetimer; 					            //同步模式时间 
+	uint8_t  syncModeSendInterval; 		                    //同步模式发送间隔
+	uint8_t  sync_stopall; 						            //停止
+	uint8_t  syncsendflag;  					        //串口发送标志位
+	uint8_t  keySame;  					 			    //两边同时有键值的时候打断
+    errorCode_t sync_error;
+} MFPData_t;
+
 /*
 // 按键数据结构 包含：按键、PWM、时间
 typedef struct {

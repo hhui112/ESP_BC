@@ -64,6 +64,7 @@ extern char last_saved_passwd[64];
 
 static const char *TAG = "wifi station";
 int s_retry_num = 0;
+static int s_mqtt_retry_num = 0;
 static EventGroupHandle_t s_wifi_event_group;
 extern device_info_t *device_info;
 char *mqtt_json_send;
@@ -88,6 +89,7 @@ wifi_config_t wifi_config = {
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data)
 {
+    static uint32_t last_disconnect_time = 0;
     //开始连接wifi
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
     {
@@ -96,15 +98,17 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     //wifi断开
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
-            ESP_LOGW(TAG, "WiFi disconnected, reason: %d", ((wifi_event_sta_disconnected_t *)event_data)->reason);
-            ESP_LOGI(TAG, "Connecting to SSID: %s", (const char *)wifi_config.sta.ssid);
-            ESP_LOGI(TAG, "With Password: %s", (const char *)wifi_config.sta.password);
+        ESP_LOGW(TAG, "WiFi disconnected, reason: %d", ((wifi_event_sta_disconnected_t *)event_data)->reason);
+        ESP_LOGI(TAG, "Connecting to SSID: %s", (const char *)wifi_config.sta.ssid);
+        ESP_LOGI(TAG, "With Password: %s", (const char *)wifi_config.sta.password);
 
-            vTaskDelay(2000 / portTICK_PERIOD_MS); // 2 秒后重试
-            esp_wifi_connect();
-            s_retry_num++;
-            set_wifi_status(WIFI_STATUS_RECONNECTING);
-            ESP_LOGI(TAG, "retry to connect to the AP,num %d",s_retry_num);
+        esp_wifi_connect();
+        set_wifi_status(WIFI_STATUS_RECONNECTING);
+        if (++s_retry_num > 120) {
+            ESP_LOGE(TAG, "WiFi reconnect timeout, rebooting...");
+            esp_restart();
+        }
+        ESP_LOGI(TAG, "retry to connect to the AP,num %d",s_retry_num);
     }
 
     // 新增：丢失 IP 地址，IP 地址重置为 0 则断开
@@ -166,6 +170,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     // 建立连接成功
     case MQTT_EVENT_CONNECTED:
         printf("MQTT_client cnnnect ok. \n");
+        s_mqtt_retry_num = 0;
         if(get_one_key_config_wifi_status())
         {
            
@@ -233,9 +238,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         }
         printf("MQTT_client1");
         break;
-    // 客户端断开连接
+    // 客户端断开连接 10s自动尝试重连
     case MQTT_EVENT_DISCONNECTED:
-        printf("MQTT_client have disconnected. \n");
+        printf("MQTT_client have disconnected. s_mqtt_retry_num= %d\n",s_mqtt_retry_num);
         set_mqtt_status(0);
         if(get_one_key_config_wifi_status())
         {
@@ -247,7 +252,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             }
             // set_one_key_config_wifi_status(0); // 不需要 1. MQTT 断开不能说明 WiFi 参数是有效的,设置为0代表不用保存wifi密码导致
         }
-
+        s_mqtt_retry_num++;
+        if (s_mqtt_retry_num > 60) {  // 每次断开 +1，超出120次重启（每10s触发一次，相当于10分钟）
+            ESP_LOGE(TAG, "MQTT reconnect timeout, rebooting...");
+            esp_restart();
+        }
         //断开wifi，重新连接
         // if (get_wifi_status())
         // {
@@ -445,7 +454,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                        
                     }else if(secondItem && strstr(secondItem->valuestring, "mcCli"))
                     {
-                        printf("mqtt mqtt received to: mcCli\n");
+                        // printf("mqtt mqtt received to: mcCli\n");
                         if(get_devic_id_flag() == 0)
                         {
                             sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"no sensor id,wait two min again\"}", 
@@ -456,7 +465,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         }else
                         {
                             secondItem = cJSON_GetObjectItem(firstItem, "cmd");
-                            printf("I mqtt mc cil:secondItem = %s\n",secondItem->valuestring);
+                            // printf("I mqtt mc cil:secondItem = %s\n",secondItem->valuestring);
                             if (secondItem) 
                             {
                                 const char *cmd_str = secondItem->valuestring;  
@@ -470,8 +479,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                                 // 将转换后的数据通过队列发送出去
                                 if (cmd_len > 0 && cmd_bin[0] == 0xAA) 
                                 {
-                                    for(int i=0;i<cmd_len;i++){printf("%02X ",cmd_bin[i]);}printf("\n\n");
-
+                                    // for(int i=0;i<cmd_len;i++){printf("%02X ",cmd_bin[i]);}printf("\n\n");
                                     if (xQueueSend(device_info->mqtt_key->xQueue, cmd_bin, 0) != pdPASS) {
                                         printf("Queue send failed.\r\n");
                                     }
@@ -596,7 +604,7 @@ void aliyun_mqtt_server(void)
     //个人阿里云
     // sprintf(mqtt_connect_aliyun_url, "%s.iot-as-mqtt.cn-shanghai.aliyuncs.com", device_info->aliyun.product_key);    //product_host
     //企业阿里云
-    strcpy(mqtt_connect_aliyun_url, "iot-060a3upv.mqtt.iothub.aliyuncs.com");    //iot-060a3upv.mqtt.iothub.aliyuncs.com   192.168.232.63
+    strcpy(mqtt_connect_aliyun_url, "iot-060a3upv.mqtt.iothub.aliyuncs.com");    //iot-060a3upv.mqtt.iothub.aliyuncs.com   192.168.142.63
 
     // aiotMqttSign(device_info.product_key, device_info.product_id, device_info.device_secret, clientid, username, password);
     aiotMqttSign(device_info->aliyun.product_key, device_info->aliyun.device_id, device_info->aliyun.device_secret, clientid, username, password);

@@ -148,7 +148,15 @@ unsigned char syncCalcCheckSum(void)
 	//printf("sum = %d \r\n",sum);
 	return sum;
 }
-
+uint8_t syncCalcCheckSum_mfpqueue(const uint8_t *data, uint8_t len)
+{
+    uint8_t sum = 0xFF;
+    for (uint8_t i = 0; i < len; i++)
+    {
+        sum -= data[i];
+    }
+    return sum;
+}
 
 void  Debug_printf_buff(uint8_t *buff ,uint16_t len)
 {
@@ -168,8 +176,8 @@ void  Debug_printf_buff(uint8_t *buff ,uint16_t len)
 */
 void mfp_dateSend(void)
 {   
-    printf("mfp_dateSend\n");
-    Debug_printf_buff(g_Sync_TX.rawData,g_Sync_TX.Syncdata.length+3);
+     printf("mfp_dateSend\n");
+    // Debug_printf_buff(g_Sync_TX.rawData,g_Sync_TX.Syncdata.length+3);
     uart_flush(ECHO_UART_PORT_NUM);
     gpio_set_level(UART_CTR, 0);
     vTaskDelay(1 / portTICK_PERIOD_MS);
@@ -177,6 +185,19 @@ void mfp_dateSend(void)
     uart_wait_tx_done(ECHO_UART_PORT_NUM, pdMS_TO_TICKS(10));
     gpio_set_level(UART_CTR, 1);
 }
+
+void uart_mfp_send(const uint8_t *data, size_t len)
+{
+    // uart_flush(ECHO_UART_PORT_NUM);
+    gpio_set_level(UART_CTR, 0);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    uart_write_bytes(ECHO_UART_PORT_NUM, (const char *)data, len);
+    uart_wait_tx_done(ECHO_UART_PORT_NUM, pdMS_TO_TICKS(30));
+    gpio_set_level(UART_CTR, 1);
+    // printf("uartsend: ");for(int i = 0; i < len; i++){printf("%02x ",data[i]);}printf("\n \n");
+}
+
+
 
 /*  SPI设置 万一以后要用
 
