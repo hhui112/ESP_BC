@@ -85,8 +85,12 @@
     "use_mfp.h": "c",
     "stddef.h": "c",
     "freertos.h": "c",
-    "semphr.h": "c"
+    "semphr.h": "c",
+    "time.h": "c"
   },
   "idf.adapterTargetName": "esp32",
-  "idf.portWin": "COM16"
+  "idf.portWin": "COM6",
+  "idf.espIdfPathWin": "d:\\espidf\\v4.4.8\\esp-idf",
+  "idf.toolsPathWin": "d:\\espidf\\tools",
+  "idf.pythonInstallPath": "d:\\espidf\\tools\\tools\\idf-python\\3.8.7\\python.exe"
 }

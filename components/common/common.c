@@ -136,6 +136,7 @@ void param_config_init(void)
 	if (device_info->mqtt_key->xQueue == NULL)
 		ESP_LOGW(TAG,"mqtt_key.xQueue create error!");
 
+
 	device_info->aliyun.xQueue = xQueueCreate(10, sizeof(mmqtt_msg_t));
 	if (device_info->aliyun.xQueue == NULL)
 		ESP_LOGW(TAG,"aliyun.xQueue create error!");

@@ -500,6 +500,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             }   
         }   
  /*     else if (msg&&strstr(msg->topic, mc_cli_data_subscribe_topic))
+ 
         {
             firstItem = cJSON_Parse((char *)msg->data);
             printf("%s\n", msg->data);

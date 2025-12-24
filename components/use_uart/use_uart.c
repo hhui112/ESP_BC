@@ -188,20 +188,25 @@ void mfp_dateSend(void)
 
 void uart_mfp_send(const uint8_t *data, size_t len)
 {
-    // uart_flush(ECHO_UART_PORT_NUM);
     gpio_set_level(UART_CTR, 0);
     vTaskDelay(pdMS_TO_TICKS(2));
     uart_write_bytes(ECHO_UART_PORT_NUM, (const char *)data, len);
     uart_wait_tx_done(ECHO_UART_PORT_NUM, pdMS_TO_TICKS(30));
     gpio_set_level(UART_CTR, 1);
-    // printf("uartsend: ");for(int i = 0; i < len; i++){printf("%02x ",data[i]);}printf("\n \n");
+    vTaskDelay(pdMS_TO_TICKS(2));
+    // 切回RX模式后，清空接收缓冲区，避免回波或残留数据
+    //vTaskDelay(pdMS_TO_TICKS(1));
+    //uart_flush_input(ECHO_UART_PORT_NUM);
+    
+    // 打印发送的数据
+    // printf("[MFP_TX] ");for(int i = 0; i < len; i++){printf("%02X ",data[i]);}printf("\n");
 }
 
 
 
 /*  SPI设置 万一以后要用
 
-#define SPI_HOST1    HSPI_HOST
+    #define SPI_HOST1    HSPI_HOST8
 #define SPI_DMA_CH_AUTO SPI_DMA_CH_AUTO
 #define SPI_CLK_SPEED 1000000  // 1 MHz SPI 速率
 #define SPI_MOSI_PIN   12  // DO (Data Out)

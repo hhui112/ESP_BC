@@ -41,6 +41,7 @@ bool mfp_queue_push(const uint8_t *data, uint8_t len, uint8_t repeat)
 {
     if (xSemaphoreTake(mfp_queue_mutex, portMAX_DELAY) == pdTRUE) {
         if (count >= MFP_TX_QUEUE_MAX_ITEMS || len > MFP_TX_DATA_MAX_LEN) {
+            printf("[MFP_TX_QUEUE] Queue FULL! count=%d\n", count);
             xSemaphoreGive(mfp_queue_mutex);
             return false;
         }
@@ -55,7 +56,7 @@ bool mfp_queue_push(const uint8_t *data, uint8_t len, uint8_t repeat)
         xSemaphoreGive(mfp_queue_mutex);
         return true;
     }
-    return false;  // 理论不会走到这里
+    return false;
 }
 
 /*
@@ -87,9 +88,10 @@ void mfp_queue_pop_send(void)
             xSemaphoreGive(mfp_queue_mutex);
             return;
         }
+        
         mfp_tx_request_t *req = &tx_queue[head];
+        
         if (req->repeat > 0) {
-            // printf("uart_mfp_send: IN\n" );
             uart_mfp_send(req->data, req->len);
 
             req->repeat--;
@@ -102,6 +104,41 @@ void mfp_queue_pop_send(void)
     }
 }
 
+
+
+/*
+void mfp_queue_pop_send(void)
+{
+    printf("[%d] pop_send start, count=%d\n", xTaskGetTickCount(), count);
+    
+    if (xSemaphoreTake(mfp_queue_mutex, portMAX_DELAY) == pdTRUE) {
+        printf("[%d] Got mutex\n", xTaskGetTickCount());
+        
+        if (count == 0) {
+            printf("[%d] Queue empty!\n", xTaskGetTickCount());
+            xSemaphoreGive(mfp_queue_mutex);
+            return;
+        }
+        
+        mfp_tx_request_t *req = &tx_queue[head];
+        printf("[%d] head=%d, repeat=%d, len=%d\n", 
+               xTaskGetTickCount(), head, req->repeat, req->len);
+        
+        if (req->repeat > 0) {
+            uart_mfp_send(req->data, req->len);
+            req->repeat--;
+            
+            if (req->repeat == 0) {
+                head = (head + 1) % MFP_TX_QUEUE_MAX_ITEMS;
+                count--;
+                printf("[%d] Item done, new count=%d\n", xTaskGetTickCount(), count);
+            }
+        }
+        xSemaphoreGive(mfp_queue_mutex);
+        printf("[%d] Mutex released\n", xTaskGetTickCount());
+    }
+}
+*/
 
 void prepare_mfp_NORMAL_KET(uint32_t keys,uint8_t repeat) 
 {

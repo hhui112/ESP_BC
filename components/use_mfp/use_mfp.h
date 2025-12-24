@@ -1,7 +1,7 @@
 #ifndef USE_MFP_H_
 #define USE_MFP_H_
 
-#define MFP_TX_QUEUE_MAX_ITEMS 20
+#define MFP_TX_QUEUE_MAX_ITEMS 30
 #define MFP_TX_DATA_MAX_LEN    32
 
 typedef struct {
