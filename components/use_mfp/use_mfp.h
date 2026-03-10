@@ -1,12 +1,22 @@
-/*
- * @Author: zhong chenjian zhongcj@softide.cn
- * @Date: 2021-10-07 23:03:40
- * @LastEditors: zhong chenjian zhongcj@softide.cn
- * @LastEditTime: 2022-06-22 00:03:46
- * @FilePath: /smart-air-bed-board-program/components/use_pwm/use_pwm.h
- * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
- */
 #ifndef USE_MFP_H_
 #define USE_MFP_H_
+
+#define MFP_TX_QUEUE_MAX_ITEMS 30
+#define MFP_TX_DATA_MAX_LEN    32
+
+typedef struct {
+    uint8_t data[MFP_TX_DATA_MAX_LEN];
+    uint8_t len;
+    uint8_t repeat;
+} mfp_tx_request_t;
+
+
+void mfp_tx_queue_init(void);
+bool mfp_queue_push(const uint8_t *data, uint8_t len, uint8_t repeat);
+void mfp_tx_queue_clear(void);
+bool mfp_tx_queue_is_empty(void);
+void mfp_queue_pop_send(void);
+void prepare_mfp_NORMAL_KET(uint32_t keys,uint8_t repeat);	
+void prepare_mfp_SOFT_START(uint32_t keys,uint8_t pwm, uint8_t tmr,uint8_t repeat); 
 
 #endif

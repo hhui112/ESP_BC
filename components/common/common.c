@@ -25,6 +25,7 @@ qs_pb_msg_sensor_1min_info *user_60s_sensor_info;
 qs_pb_msg_sleep_apnea_info *user_sa_sensor_info;
 char last_saved_ssid[32] = {0};
 char last_saved_passwd[64] = {0};
+MFPData_t 		g_MFPData_t; 	// MFP数据结构体（间隔时间之类的）
 
 void print_nvs_usage()
 {
@@ -134,6 +135,7 @@ void param_config_init(void)
 	device_info->mqtt_key->xQueue = xQueueCreate(10, 64);   //缩减10 512
 	if (device_info->mqtt_key->xQueue == NULL)
 		ESP_LOGW(TAG,"mqtt_key.xQueue create error!");
+
 
 	device_info->aliyun.xQueue = xQueueCreate(10, sizeof(mmqtt_msg_t));
 	if (device_info->aliyun.xQueue == NULL)

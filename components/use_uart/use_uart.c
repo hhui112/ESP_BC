@@ -148,7 +148,15 @@ unsigned char syncCalcCheckSum(void)
 	//printf("sum = %d \r\n",sum);
 	return sum;
 }
-
+uint8_t syncCalcCheckSum_mfpqueue(const uint8_t *data, uint8_t len)
+{
+    uint8_t sum = 0xFF;
+    for (uint8_t i = 0; i < len; i++)
+    {
+        sum -= data[i];
+    }
+    return sum;
+}
 
 void  Debug_printf_buff(uint8_t *buff ,uint16_t len)
 {
@@ -168,8 +176,8 @@ void  Debug_printf_buff(uint8_t *buff ,uint16_t len)
 */
 void mfp_dateSend(void)
 {   
-    printf("mfp_dateSend\n");
-    Debug_printf_buff(g_Sync_TX.rawData,g_Sync_TX.Syncdata.length+3);
+     printf("mfp_dateSend\n");
+    // Debug_printf_buff(g_Sync_TX.rawData,g_Sync_TX.Syncdata.length+3);
     uart_flush(ECHO_UART_PORT_NUM);
     gpio_set_level(UART_CTR, 0);
     vTaskDelay(1 / portTICK_PERIOD_MS);
@@ -178,9 +186,27 @@ void mfp_dateSend(void)
     gpio_set_level(UART_CTR, 1);
 }
 
+void uart_mfp_send(const uint8_t *data, size_t len)
+{
+    gpio_set_level(UART_CTR, 0);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    uart_write_bytes(ECHO_UART_PORT_NUM, (const char *)data, len);
+    uart_wait_tx_done(ECHO_UART_PORT_NUM, pdMS_TO_TICKS(30));
+    gpio_set_level(UART_CTR, 1);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    // 切回RX模式后，清空接收缓冲区，避免回波或残留数据
+    //vTaskDelay(pdMS_TO_TICKS(1));
+    //uart_flush_input(ECHO_UART_PORT_NUM);
+    
+    // 打印发送的数据
+    // printf("[MFP_TX] ");for(int i = 0; i < len; i++){printf("%02X ",data[i]);}printf("\n");
+}
+
+
+
 /*  SPI设置 万一以后要用
 
-#define SPI_HOST1    HSPI_HOST
+    #define SPI_HOST1    HSPI_HOST8
 #define SPI_DMA_CH_AUTO SPI_DMA_CH_AUTO
 #define SPI_CLK_SPEED 1000000  // 1 MHz SPI 速率
 #define SPI_MOSI_PIN   12  // DO (Data Out)

@@ -287,8 +287,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
 
         break;
     case ESP_GATTS_WRITE_EVT:
-        ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_WRITE_EVT, write value:");
-        esp_log_buffer_hex(GATTS_TABLE_TAG, param->write.value, param->write.len);
+        // ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_WRITE_EVT, write value:");
+        // esp_log_buffer_hex(GATTS_TABLE_TAG, param->write.value, param->write.len);
         // printf("%s\n",param->write.value);
         if (param->write.len > 0)
         {

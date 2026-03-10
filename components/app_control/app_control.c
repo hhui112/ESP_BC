@@ -29,6 +29,15 @@
 #include "mqtt_client.h"
 #include "esp_task_wdt.h"
 #include "driver/gpio.h"
+#include "use_mfp.h"
+
+// ==================== 调试配置开关 ====================
+// 量产时将下面的宏改为 0，调试时改为 1
+#define ENABLE_DEBUG_DISPLAY    0   // 1=启用调试显示任务  0=关闭（量产）
+#define ENABLE_PERFORMANCE_MON  0   // 1=启用性能监控任务  0=关闭（量产）
+#define ENABLE_MFP_DETAIL_LOG   0   // 1=启用MFP详细日志  0=仅错误日志（量产）
+// ======================================================
+
 #define UP_RATIO_60S    6   // 60s上报一次需改为12
 
 static const char *TAG = "control";
@@ -45,6 +54,8 @@ extern qs_pb_msg_sensor_1min_info *user_60s_sensor_info;
 extern qs_pb_msg_sensor_5sec_info *user_5s_sensor_info;
 extern qs_pb_msg_sleep_apnea_info *user_sa_sensor_info;
 time_t now;
+static uint16_t human_year;
+static uint8_t human_mon;
 struct tm ti;
 bool pause_uart_task = true;
 TaskHandle_t uart_handle = NULL;
@@ -63,6 +74,7 @@ static uint16_t  sensor_ota_mode_cnt = 0;
 static uint8_t set_mode_flag = 2;   // xinzeng:set_mode_flag 强制生成报告
 static char report_cli_data[2]={0},cli_report_name[32]={0};
 static snore_parameters_t snore_parameters_demo = {0};    //打鼾干预延时流程参数
+static uint32_t snore_blocked_until_s = 0;                //闹钟指令后 120s 内禁止打鼾干预（开机秒数）
 
 #define ECHO_TEST_TXD (19)
 #define ECHO_TEST_RXD (25)
@@ -73,7 +85,7 @@ static snore_parameters_t snore_parameters_demo = {0};    //打鼾干预延时�
 #define ECHO_UART_BAUD_RATE     (38400)
 #define ECHO_TASK_STACK_SIZE    (4096)
 
-#define BUF_SIZE (1024)
+#define BUF_SIZE (512)
 
 static QueueHandle_t uart2_queue;
 
@@ -81,6 +93,11 @@ union SyncCommunicationData_t g_Sync_TX;
 union SyncCommunicationData_t g_Sync_RX;
 union keys_t   g_keys;
 g_system_flag_t g_system_flag;
+
+// MFP解析缓冲区 - 独立于接收缓冲区,避免数据被清零
+static uint8_t g_MFP_Parsed_Frame[256];      // 存储最近一次完整解析的帧
+static uint16_t g_MFP_Parsed_Len = 0;        // 已解析帧的长度
+static SemaphoreHandle_t g_MFP_Parsed_Mutex = NULL;  // 线程安全保护
 
 void set_cli_report_name(char* data,char len)
 {
@@ -330,7 +347,7 @@ else if (data[0] == 0x33 && data[1]==0x44 && data[2]==0x55)
     {
         sencondItem = cJSON_GetObjectItem(firstItem, "id");
         if(!sencondItem) return 0;
-        printf("id = %s\n", sencondItem->valuestring);
+        // printf("id = %s\n", sencondItem->valuestring);
         if(strcmp(sencondItem->valuestring, device_info->id) != 0) return 0;
         sencondItem = cJSON_GetObjectItem(firstItem, "type");
         if(!sencondItem) return 0;
@@ -463,10 +480,10 @@ else if (data[0] == 0x33 && data[1]==0x44 && data[2]==0x55)
         }else if(sencondItem->valueint == 12)
         {
             uint8_t cmd_bin[64] = {0}; 
-            printf("BLE: 12\n");
+            // printf("BLE: 12\n");
             sencondItem = cJSON_GetObjectItem(firstItem, "cmd");
             if(!sencondItem) return 0;
-            printf("BLE: sencondItem->valuestring = %s\n",sencondItem->valuestring);
+            // printf("BLE: sencondItem->valuestring = %s\n",sencondItem->valuestring);
 
             const char *cmd_str = sencondItem->valuestring;  
             int cmd_len = 0;
@@ -479,7 +496,7 @@ else if (data[0] == 0x33 && data[1]==0x44 && data[2]==0x55)
             // 将转换后的数据通过队列发送出去
             if (cmd_len > 0 && cmd_bin[0] == 0xAA) 
             {
-                for(int i=0;i<cmd_len;i++){printf("%02X ",cmd_bin[i]);}printf("\n\n");
+                // printf("\nble_Rev:"); for(int i=0;i<cmd_len;i++){printf("%02X ",cmd_bin[i]);}printf("\n");
 
                 mqtt_ble_data_parser_cb(cmd_bin);
             }else{
@@ -547,12 +564,66 @@ void ble_data_parser_task(void *pv)
     {
         if (xQueueReceive(device_info->ble->xQueue, device_info->ble->data_rec.value, portMAX_DELAY))
         {
-            printf("ble:%s\n",device_info->ble->data_rec.value);
+            // printf("ble:%s\n",device_info->ble->data_rec.value);
             ble_data_parser_cb(device_info->ble->data_rec.value);
         }
     }
     vTaskDelete(NULL);
 }
+
+/*
+#define BLE_RECV_BUF_SIZE 512
+
+void ble_data_parser_task(void *pv)
+{
+    static char ble_recv_buf[BLE_RECV_BUF_SIZE];
+    static size_t ble_recv_len = 0;
+
+    uint8_t temp_data[32]; // 临时存放20字节以内的分段
+    int brace_count = 0;
+
+    while (1)
+    {
+        if (xQueueReceive(device_info->ble->xQueue, temp_data, portMAX_DELAY))
+        {
+            size_t seg_len = strlen((char *)temp_data);
+
+            // 防止溢出
+            if (ble_recv_len + seg_len >= BLE_RECV_BUF_SIZE)
+            {
+                ble_recv_len = 0;
+                brace_count = 0;
+                memset(ble_recv_buf, 0, sizeof(ble_recv_buf));
+                continue;
+            }
+
+            // 追加到缓存
+            memcpy(ble_recv_buf + ble_recv_len, temp_data, seg_len);
+            ble_recv_len += seg_len;
+            ble_recv_buf[ble_recv_len] = '\0';
+
+            // 统计大括号匹配数量
+            for (size_t i = 0; i < seg_len; i++)
+            {
+                if (temp_data[i] == '{') brace_count++;
+                else if (temp_data[i] == '}') brace_count--;
+            }
+
+            // 如果 brace_count == 0 并且最后一个是 '}'
+            if (brace_count == 0 && ble_recv_len > 0 && ble_recv_buf[ble_recv_len - 1] == '}')
+            {
+                // 完整JSON
+                ble_data_parser_cb((uint8_t *)ble_recv_buf);
+
+                // 清空缓冲
+                ble_recv_len = 0;
+                memset(ble_recv_buf, 0, sizeof(ble_recv_buf));
+            }
+        }
+    }
+    vTaskDelete(NULL);
+}
+*/
 
 /*
 //mqtt配置解析
@@ -910,23 +981,22 @@ void single_cmd_parse(uint8_t *value, uint16_t len, uint8_t type)
     case 0x0d:
         m_5s_pb_msg_de = (qs_pb_msg_sensor_5sec_info *)malloc(sizeof(qs_pb_msg_sensor_5sec_info));
         memset(m_5s_pb_msg_de, 0, sizeof(qs_pb_msg_sensor_5sec_info));
-        printf("5s: 单帧");
+        printf("5s: 单帧 \n");
         //  for (uint8_t i = 0; i < len; i++)
         //  {
         //      printf("%x ", value[i]);
         //  }
-        printf("\n\r");
         ret = qs_pb_sensor_5sec_info_decode((char *)value, len, m_5s_pb_msg_de);
         if(ret == QS_SUCCESS)
         {
-            // printf("device_id = %s\n",m_5s_pb_msg_de->device_id);
-            // printf("timestamp = %d\n",m_5s_pb_msg_de->timestamp);
-            // printf("state--// ");
-            // for (uint8_t i = 0; i < 12; i++)
-            // {
-            //     printf("%x ", m_5s_pb_msg_de->status[i]);
-            // }
-            // printf("\n\r");
+                    printf("device_id = %s\n",m_5s_pb_msg_de->device_id);
+                    printf("timestamp = %d\n",m_5s_pb_msg_de->timestamp);
+                    printf("state--// ");
+                    for (uint8_t i = 0; i < 12; i++)
+                    {
+                        printf("%x ", m_5s_pb_msg_de->status[i]);
+                    }
+                    printf("\n\r");
             if(get_5s_flag == false)
             {
                 get_5s_flag = true;
@@ -1177,7 +1247,7 @@ void uart_data_parser_task(void *pv)
 
                         printf("sssset addr 3 \n");    //xiugai
                         char return_value[100] = {0};
-                        set_bc(device_info->utc.time_stamp, "set addr 3", 1, 0, return_value, 10);
+                        set_bc(device_info->utc.time_stamp, "set addr 3", 1, 0, return_value, 100);
                         printf("set addr 3 = %s\n",return_value);
                         // set_bc(device_info->utc.time_stamp, "version", 1, 0, device_version, 200);
                         // printf("bc version = %s\n",device_version);         
@@ -1242,15 +1312,30 @@ void snoring_detection_func(void)
 
 }
 
-//参数显示任务
+// 系统控制任务（LED指示灯 + 打鼾检测）
+// 这个任务独立于调试显示，量产时必须保留
+void system_control_task(void *pv)
+{
+    while(1)
+    {
+        // LED指示灯控制：WiFi连接时红灯亮，绿灯灭；未连接时相反
+        gpio_set_level(LED_RED, (device_info->wifi.flag == 1) ? 1 : 0);
+        gpio_set_level(LED_GREEN, (device_info->wifi.flag == 1) ? 0 : 1);
+
+        // 打鼾检测逻辑
+        snoring_detection_func();
+
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
+    }
+    vTaskDelete(NULL);
+}
+
+// 参数显示任务（仅用于调试，量产时可注释）
 void data_display_task(void *pv)
 {
     while(1)
     {
         ESP_LOGI(TAG, "/*======111=====================data display===============%d===========*/",sensor_ota_mode_cnt);
-
-        gpio_set_level(LED_RED,(device_info->wifi.flag == 1)?1:0);
-        gpio_set_level(LED_GREEN,(device_info->wifi.flag == 1)?0:1);
 
         ESP_LOGI(TAG, "heap_size:%d,version:%s,id:%s,dataUpOn %d,sleepUping %d,sensorOta %d,current_report:%s",esp_get_free_heap_size(),device_info->ota.running_version,
                                                                                                 device_info->id,device_info->data_up_switch,
@@ -1279,10 +1364,9 @@ void data_display_task(void *pv)
         ESP_LOGI(TAG, "wifi:%d\tmqtt:%d\tble:%d\ttime:%d\tbc_device_id:%d",device_info->wifi.flag, device_info->aliyun.flag,device_info->ble->flag,device_info->utc.flag,devic_id_flag);
         if(device_info->utc.flag)
         {
-            ESP_LOGI(TAG, "%d-%02d-%02d %02d:%02d:%02d  %02d %d", ti.tm_year ,ti.tm_mon, ti.tm_mday, ti.tm_hour, ti.tm_min, ti.tm_sec , ti.tm_wday, device_info->utc.time_stamp);
+            ESP_LOGI(TAG, "%d-%02d-%02d %02d:%02d:%02d  %02d %d", human_year ,human_mon, ti.tm_mday, ti.tm_hour, ti.tm_min, ti.tm_sec , ti.tm_wday, device_info->utc.time_stamp);
         }
-        
-        snoring_detection_func();   // 判断是否打鼾
+
         vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
     vTaskDelete(NULL);
@@ -1370,7 +1454,7 @@ int set_bc(uint32_t time_stamp, char *value, uint8_t switch_return, uint8_t swit
                 if(return_value!=NULL)
                 {
                     strcpy(return_value, (char *)m_pb_msg_de->data);
-                    printf("In set bc return_value: %s\n",return_value);
+                    // printf("In set bc return_value: %s\n",return_value);
                 }    
                 
             }    
@@ -1520,6 +1604,7 @@ void sntp_update_flag(struct timeval* tv)
 
 uint32_t find_report_time(char *report_name, uint8_t len)
 {
+    uint32_t report_tim;
     // printf("%s\n", report_name);
     struct tm stm;  
     int iY, iM, iD, iH, iMin, iS;  
@@ -1555,7 +1640,12 @@ uint32_t find_report_time(char *report_name, uint8_t len)
     stm.tm_sec=iS;  
 
     /*printf("%d-%0d-%0d %0d:%0d:%0d\n", iY, iM, iD, iH, iMin, iS);*/   //标准时间格式例如：2016:08:02 12:12:30
-    return (uint32_t)mktime(&stm);
+    report_tim = (uint32_t)mktime(&stm);
+    if (report_tim <= 1262304000UL || report_tim >= 2147483647UL){
+        return 0; 
+    }
+    
+    return report_tim;
 }
 
 void check_report_and_up_to_aliyun(void)
@@ -1739,9 +1829,9 @@ void check_report_and_up_to_aliyun(void)
                         sleep_up_flag = 1;
                         memset(json_report_name, 0, 32);
                         strcpy(json_report_name, report_name[i]);
-                        set_bc(device_info->utc.time_stamp, get_report_cmd2, 0, 0, return_value, 100);
+                        set_bc(device_info->utc.time_stamp, get_report_cmd2, 0, 0, return_value, 200);
                         vTaskDelay(5 * 1000 / portTICK_PERIOD_MS);
-                        //set_bc(device_info->utc.time_stamp, get_report_cmd2, 0, 0, return_value, 1000);   //发送读取report指令
+                        set_bc(device_info->utc.time_stamp, get_report_cmd2, 0, 0, return_value, 1000);   //发送读取report指令
                         sleep_up_flag = 0;
                     }
 
@@ -1765,48 +1855,53 @@ void utc_get_task(void *pv)
     {
         utc_first_flag=0;
 
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
-    //等待WIFI连接
-    while(!get_wifi_status())
-    {
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
+        //等待WIFI连接
+        while(!get_wifi_status())
+        {
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
+        //时间更正
+        sntp_set_time_sync_notification_cb(&sntp_update_flag);
+        sntp_setoperatingmode(SNTP_OPMODE_POLL);
+        sntp_setservername(0, "ntp.aliyun.com");
+        sntp_init();
+        setenv("TZ", "CST-8", 1);
+        tzset();
+        //等待utc更新完毕
+        while(device_info->utc.flag == false)
+        {
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
+        if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
+            printf("[UTC] SNTP 同步失败 or 未完成\n");
+            vTaskDelay(5000 / portTICK_PERIOD_MS);
+            esp_restart();     // 重启设备    
+        } else {
+            printf("[UTC] SNTP 同步成功\n");
+        }
+
+        //更新博创设备时间
+        while(devic_id_flag == 0)      //等待device_id更新赋值(从串口上接收到设备ID/通信没问题)
+        {
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
+        printf("[UTC] devic_id_flag 同步成功\n");
+
+        time(&now);
+        localtime_r(&now, &ti);
+        device_info->utc.time_stamp = (uint32_t)(mktime(&ti));
+        printf("[UTC] device_info->utc.time_stamp = %d\n", device_info->utc.time_stamp);
+
+        itoa(device_info->utc.time_stamp, time_stamp_to_string, 10);
+        sprintf(set_rtc_cmd, "set rtc %s", time_stamp_to_string);
+        printf("[UTC] set_rtc_cmd = %s\n", set_rtc_cmd);
+
+        set_bc(device_info->utc.time_stamp, set_rtc_cmd, 1, 0, return_value, 100);
+        set_rtc_flag = 1;
         vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-    //时间更正
-    sntp_set_time_sync_notification_cb(&sntp_update_flag);
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "ntp.aliyun.com");
-    sntp_init();
-    setenv("TZ", "CST-8", 1);
-    tzset();
-    //等待utc更新完毕
-    while(device_info->utc.flag == false)
-    {
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-    //更新博创设备时间
-    while(devic_id_flag == 0)      //等待device_id更新赋值
-    {
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-
-
-    time(&now);
-    localtime_r(&now, &ti);
-    device_info->utc.time_stamp = mktime(&ti);
-
-    itoa(device_info->utc.time_stamp, time_stamp_to_string, 10);
-
-    sprintf(set_rtc_cmd, "set rtc %s", time_stamp_to_string);
-    printf("set_rtc_cmd\n");
-    set_bc(device_info->utc.time_stamp, set_rtc_cmd, 1, 0, return_value, 10);
-    set_rtc_flag = 1;
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-    // printf("bc version = %s\n",return_value);
-
-    printf("get_version_cmd\n");
-    set_bc(device_info->utc.time_stamp, get_version_cmd, 1, 0, device_version, 20);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-    printf("bc version = %s\n",device_version);
+        set_bc(device_info->utc.time_stamp, get_version_cmd, 1, 0, device_version, 100);
+        printf("[UTC]  get_version_cmd= %s\n",device_version);
     }
     while(1)
     {
@@ -1819,16 +1914,26 @@ void utc_get_task(void *pv)
         time(&now);
 		
 		localtime_r(&now, &ti);
-        device_info->utc.time_stamp = mktime(&ti);
-		ti.tm_year = ti.tm_year + 1900;
-		ti.tm_mon = ti.tm_mon + 1;
-		device_info->utc.time[0] = ti.tm_year ;			//年
-		device_info->utc.time[1] = ti.tm_mon ;			//月
+        device_info->utc.time_stamp = (uint32_t)(mktime(&ti));
+
+        human_year = ti.tm_year + 1900;
+        human_mon  = ti.tm_mon + 1;
+
+		// ti.tm_year = ti.tm_year + 1900;
+		// ti.tm_mon = ti.tm_mon + 1;
+		device_info->utc.time[0] = human_year;			//年
+		device_info->utc.time[1] = human_mon;			//月
 		device_info->utc.time[2] = ti.tm_mday ;			//日
 		device_info->utc.time[3] = ti.tm_hour ;			//时
 		device_info->utc.time[4] = ti.tm_min;			//分
 		device_info->utc.time[5] = ti.tm_sec ;			//秒
-
+/*
+        // 异常检查
+        if (user_5s_sensor_info->timestamp <= 1262304000UL ||  user_5s_sensor_info->timestamp >= 2147483647UL){
+            set_rtc_flag = 0;
+            printf("[UTC]  重新校正 user_5s_sensor_info->timestamp = %d\n",user_5s_sensor_info->timestamp);
+        }
+*/
         if(set_rtc_flag == 0)
         {
             while(devic_id_flag == 0)      //等待device_id更新赋值
@@ -1838,7 +1943,7 @@ void utc_get_task(void *pv)
 
             time(&now);
             localtime_r(&now, &ti);
-            device_info->utc.time_stamp = mktime(&ti);
+            device_info->utc.time_stamp = (uint32_t)(mktime(&ti));
             itoa(device_info->utc.time_stamp, time_stamp_to_string, 10);
             memset(set_rtc_cmd,0,100);
             sprintf(set_rtc_cmd, "set rtc %s", time_stamp_to_string);
@@ -1917,10 +2022,11 @@ void real_data_up_task(void *pv)
                                             device_info->ble->handle,
                                             strlen((char *)temp), temp, false);
             }
-        
+
             if(cnt_5s >= UP_RATIO_60S)
             {
                 cnt_5s = 0;
+            
                 if((ap_min_min>user_60s_sensor_info->Mmin)||(ap_min_min==0))
                 {
                     ap_min_min = user_60s_sensor_info->Mmin;
@@ -1938,7 +2044,8 @@ void real_data_up_task(void *pv)
                         user_60s_sensor_info->on_off_bed = 1;
                         //set_bc(device_info->utc.time_stamp, "reboot", 1, 0, NULL, 200);  
                     }
-                }                
+                }  
+                         
                 memset(temp, 0, 512);
                 sprintf((char *)temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":2,\"data\":{\"bed\":%d,\"heart\":%d,\"breath\":%d,\"Mmin\":%d,\"Mmean\":%d,\"NSD\":%d,\"NPD\":%d,\"SBP\":%d,\"DBP\":%d}}",
                                                                                                                 device_info->id,
@@ -2205,6 +2312,19 @@ void handle_snore_trigger(bool is_demo)
 
     // 如果未在干预中，则立即发送缓启动抬升命令,并记录时间
     if (!device_info->snore->snore_state.is_intervening) {
+        /* 闹钟指令后 120s 内不执行新打鼾干预 */
+        if (snore_blocked_until_s != 0) {
+            uint32_t now_s = (uint32_t)(xTaskGetTickCount() / pdMS_TO_TICKS(1000));
+            if (now_s < snore_blocked_until_s) {
+                if (is_demo) {
+                    device_info->snore->snore_state.triggered_flag_demo = false;
+                } else {
+                    device_info->snore->snore_state.triggered_flag = false;
+                }
+                return;
+            }
+        }
+
         printf("触发打鼾干预%s: triggered = %d, 正在干预: in_progress = %d \r\n", 
                is_demo ? "(演示)" : "", 
                is_demo ? device_info->snore->snore_state.triggered_flag_demo : device_info->snore->snore_state.triggered_flag, 
@@ -2256,7 +2376,6 @@ void handle_snore_trigger(bool is_demo)
                     mqtt_send_mutex = true;
                 }
             }
-
         }
     } else {
         // 如果已经触发，则等到冷却时间后再发送缓启动降下命令
@@ -2325,39 +2444,6 @@ void handle_snore_trigger(bool is_demo)
     }
 }
 
-/*
-*     <设备-主控盒> MFP发送判断函数：判断是否要向
-void mfp_datasend_handler(void)
-{
-    static uint8_t send_attempts = 0;
-    if (g_system_flag.mfp_tx_ready != 1) {
-        // return;
-    }
-
-    // 优先处理 MQTT/ BLE 数据下发，发送 3 次
-    if (g_system_flag.Key_send_flag) {
-        mfp_dateSend();
-        send_attempts++;
-        if (send_attempts >= 3) {
-            g_system_flag.mfp_tx_ready = 0;
-            g_system_flag.Key_send_flag = 0;
-            send_attempts = 0;
-        }
-    }
-
-    // 处理打鼾干预
-    if (device_info->snore->snore_state.triggered_flag || device_info->snore->snore_state.triggered_flag_demo) {
-        // printf("处理打鼾干预！\n");
-        if (device_info->snore->snore_state.triggered_flag) {
-            handle_snore_trigger(false);  // 正常触发
-        } else {
-            handle_snore_trigger(true);   // 演示触发
-        }
-    }
-}
-*/ 
-
-
 void syncPacket_to_hex_str(const void* packet, size_t size, char* out_buf, size_t buf_size) {
     const uint8_t* data = (const uint8_t*)packet;
     char* p = out_buf;
@@ -2382,86 +2468,57 @@ void syncPacket_to_hex_str(const void* packet, size_t size, char* out_buf, size_
 */
 void ble_up_controlbox_data(uint8_t up_type) {
     static char json_buf[512];
-    static char hex_str[128];  // 确保足够大
-/*
-    int len = snprintf(json_buf, sizeof json_buf,
-        "{"
-            "\"id\":\"%s\",\"ts\":%d,\"type\":12,"
-            "\"data\":{"
-                "\"length\":%d,\"type\":%d,\"keys\":%u,"
-                "\"ledData\":[%d,%d,%d,%d,%d],"
-                "\"UBB\":%d,\"stopAll\":%d,\"autoMove\":%d,\"sync\":%d,\"lock\":%d,\"angleAdj\":%d,\"factoryMode\":%d,\"addr\":%d,"
-                "\"massage_status\":[%d,%d],\"massageTimer\":%u,"
-                "\"pulseCounter\":[%u,%u,%u,%u],"
-                "\"current\":[%d,%d,%d,%d],"
-                "\"U_div_2\":%u,\"massageCurrent\":%u,\"mfpCurrent\":%u,"
-                "\"slow_pwm\":%d,\"slow_timer\":%d,"
-                "\"bedtype\":%d,"
-                "\"asyncCtrlFrame\":{\"addr\":%d,\"mode\":%d,\"strechMove\":%d,\"music\":%d},"
-                "\"heating\":%d,\"aromaswitch\":%d,\"rgb\":%d,"
-                "\"red\":%d,\"green\":%d,\"blue\":%d,"
-                "\"massage_mode\":%d,\"brightness\":%d,"
-                "\"reserve_1\":%d,\"Gemini_flag\":%d,\"Bedtype\":%d,\"Customertype\":%d,\"ReleaseNo\":%d,"
-                "\"M1_position\":%d,\"M2_position\":%d,\"M3_position\":%d,\"M4_position\":%d,"
-                "\"checkSum\":%d"
-            "}"
-        "}",
-        device_info->id,device_info->utc.time_stamp,
-        g_Sync_RX.syncPacket.length, g_Sync_RX.syncPacket.type, g_Sync_RX.syncPacket.keys,
-        g_Sync_RX.syncPacket.ledData[0], g_Sync_RX.syncPacket.ledData[1], g_Sync_RX.syncPacket.ledData[2], g_Sync_RX.syncPacket.ledData[3], g_Sync_RX.syncPacket.ledData[4],
-        g_Sync_RX.syncPacket.UBB, g_Sync_RX.syncPacket.stopAll, g_Sync_RX.syncPacket.automaticMovementIsActive, g_Sync_RX.syncPacket.sync, g_Sync_RX.syncPacket.lock, g_Sync_RX.syncPacket.angleAdj, g_Sync_RX.syncPacket.factoryMode, g_Sync_RX.syncPacket.addr,
-        g_Sync_RX.syncPacket.massage_status[0], g_Sync_RX.syncPacket.massage_status[1], g_Sync_RX.syncPacket.massageTimer,
-        g_Sync_RX.syncPacket.pulseCounter[0], g_Sync_RX.syncPacket.pulseCounter[1], g_Sync_RX.syncPacket.pulseCounter[2], g_Sync_RX.syncPacket.pulseCounter[3],
-        g_Sync_RX.syncPacket.current[0], g_Sync_RX.syncPacket.current[1], g_Sync_RX.syncPacket.current[2], g_Sync_RX.syncPacket.current[3],
-        g_Sync_RX.syncPacket.U_div_2, g_Sync_RX.syncPacket.massageCurrent, g_Sync_RX.syncPacket.mfpCurrent,
-        g_Sync_RX.syncPacket.slow_pwm, g_Sync_RX.syncPacket.slow_timer,
-        g_Sync_RX.syncPacket.bedtype,
-        g_Sync_RX.syncPacket.asyncCtrlFrame.addr, g_Sync_RX.syncPacket.asyncCtrlFrame.mode, g_Sync_RX.syncPacket.asyncCtrlFrame.strechMove, g_Sync_RX.syncPacket.asyncCtrlFrame.music,
-        g_Sync_RX.syncPacket.heating, g_Sync_RX.syncPacket.aromaswitch, g_Sync_RX.syncPacket.rgb,
-        g_Sync_RX.syncPacket.reddata, g_Sync_RX.syncPacket.greendata, g_Sync_RX.syncPacket.bluedata,
-        g_Sync_RX.syncPacket.massge_mode, g_Sync_RX.syncPacket.brightness,
-        g_Sync_RX.syncPacket.reserve_1, g_Sync_RX.syncPacket.Gemini_flag, g_Sync_RX.syncPacket.Bedtype, g_Sync_RX.syncPacket.Customertype, g_Sync_RX.syncPacket.ReleaseNo,
-        g_Sync_RX.syncPacket.M1_position, g_Sync_RX.syncPacket.M2_position, g_Sync_RX.syncPacket.M3_position, g_Sync_RX.syncPacket.M4_position,
-        g_Sync_RX.syncPacket.checkSum
-    );
-*/
-    syncPacket_to_hex_str(&g_Sync_RX.syncPacket, sizeof(g_Sync_RX.syncPacket), hex_str, sizeof(hex_str));
-    // printf("hex_str: %s\n", hex_str);
+    static char hex_str[256];
+    uint16_t raw_len = 0;
+    
+    // 从独立的解析缓冲区读取数据（带线程安全保护）
+    if (g_MFP_Parsed_Mutex != NULL && 
+        xSemaphoreTake(g_MFP_Parsed_Mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        
+        raw_len = g_MFP_Parsed_Len;
+        
+        if (raw_len > 0 && raw_len <= sizeof(g_MFP_Parsed_Frame)) {
+            syncPacket_to_hex_str(g_MFP_Parsed_Frame, raw_len, hex_str, sizeof(hex_str));
+        } else {
+            ESP_LOGW(TAG, "Invalid parsed packet length: %d", raw_len);
+            xSemaphoreGive(g_MFP_Parsed_Mutex);
+            return;
+        }
+        
+        xSemaphoreGive(g_MFP_Parsed_Mutex);
+    } else {
+        ESP_LOGW(TAG, "Failed to acquire mutex for reading parsed data");
+        return;
+    }
 
     int len = snprintf(json_buf, sizeof(json_buf),
-    "{"
-        "\"id\":\"%s\",\"ts\":%d,\"type\":12,"
-        "\"data_hex\":\"%s\""
-    "}",
-    device_info->id, device_info->utc.time_stamp, hex_str);
+        "{"
+            "\"id\":\"%s\",\"ts\":%d,\"type\":12,"
+            "\"data_hex\":\"%s\""
+        "}",
+        device_info->id, device_info->utc.time_stamp, hex_str);
     
-
-
-    // printf("%s \r \n", json_buf);
-    if (len < 0 || (size_t)len >= sizeof json_buf) {
+    if (len < 0 || (size_t)len >= sizeof(json_buf)) {
         printf("JSON 构建失败或缓冲区不足\n");
         return;
     }
 
-    // if (g_Sync_RX.syncPacket.massge_mode != Last_Info.massge_mode )      //不做位变：200ms发送一次 仅蓝牙上报（主控盒信息）
-    {
-        if(get_ble_status() && device_info->data_up_switch && sensor_upgrade_flag == 0)
-        {
-            esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
-                                        device_info->ble->conn_id,
-                                        device_info->ble->handle,
-                                        strlen((char *)json_buf),  (uint8_t *)json_buf, false);
+    // BLE上报
+    if(get_ble_status() && sensor_upgrade_flag == 0) {
+        esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
+                                    device_info->ble->conn_id,
+                                    device_info->ble->handle,
+                                    strlen((char *)json_buf), (uint8_t *)json_buf, false);
+    }
+
+    // MQTT上报（只在查询的时候上报）
+    if(up_type == 1 && get_mqtt_status()) {
+        if(mqtt_send_mutex == true) {
+            mqtt_send_mutex = false;
+            esp_mqtt_client_publish(client, mc_cli_data_publish_topic, (char *)json_buf, strlen((char *)json_buf), 0, 0);
+            mqtt_send_mutex = true;
         }
-    
-        if(get_mqtt_status() && device_info->data_up_switch && up_type == 1)    // 只在查询的时候上报mqtt
-        {
-            if(mqtt_send_mutex == true)
-            {
-                mqtt_send_mutex = false;
-                esp_mqtt_client_publish(client, mc_cli_data_publish_topic, (char *)json_buf, strlen((char *)json_buf), 0, 0);
-                mqtt_send_mutex = true;
-            }
-        }
+        // printf("mqtt put hex_str: %s\n", hex_str);
     }
 }
 
@@ -2470,68 +2527,173 @@ void ble_up_controlbox_data(uint8_t up_type) {
 */
 void MFP_Cmd(uint8_t cmd, uint8_t up_type)
 {
-    static uint32_t last_time = 0;
-    uint32_t now = xTaskGetTickCount();
+    //static uint32_t last_time = 0;
+    //static uint32_t now = 0;
+    //now = xTaskGetTickCount();
     // for(int i = 0;i<g_Sync_RX.syncPacket.length +3;i++){printf("%x ",g_Sync_RX.rawData[i]);} printf("\r\n");
     // printf("帧头: %d ,长度: %d ,sizeof(g_Sync_RX.syncPacket): %d \r \n",cmd,g_Sync_RX.syncPacket.length,sizeof(g_Sync_RX.syncPacket));
    
-    if((cmd == 0x07) && ((now - last_time >= pdMS_TO_TICKS(2000))))   // 200ms返回一次主控盒数据                // && (g_Sync_RX.syncPacket.length ==	sizeof(g_Sync_TX.syncPacket) - 3) // 不清楚这里为什么 34 ！= 39-3？
-	{
+    // if((cmd == 0x07) && ((now - last_time >= pdMS_TO_TICKS(2000))))   // 200ms返回一次主控盒数据                // && (g_Sync_RX.syncPacket.length ==	sizeof(g_Sync_TX.syncPacket) - 3) // 不清楚这里为什么 34 ！= 39-3？
+	if(cmd == 0x07) // 收到一帧后直接发送
+    {
 		ble_up_controlbox_data(up_type);// 蓝牙上报函数
-        last_time = now;
+        //last_time = now;
 	}else if(cmd == 0x02)                   //  蓝牙查询主控盒数据：0x02  立即响应
-    {                  
+    {   
         ble_up_controlbox_data(up_type);  // 蓝牙/mqtt都上报
-        last_time = now;
+        //last_time = now;
     }
 }
 
 /*
 *    <主控盒-设备> MFP接收数据解析函数：帧头、和校验正确则传入主控盒数据解析函数，并在接收到数据后通知发送线程
-*/
+
+
 void mfp_datareceive_handler(uint8_t *p,uint16_t len)
 {
     static uint32_t count = 0;
     uint8_t checkSum = 0,checkSum1 = 0;
     memcpy(g_Sync_RX.rawData+count,p,len);
-	count = count+len;
-
-    if(g_Sync_RX.Syncdata.length != 0x34)           // 485数据长度 52个字节 3电机  52+3 = 55 
-    {
+	count += len;  
+    //printf("count: %d len: %d g_Sync_RX.Syncdata.length =%x \r\n",count,len,g_Sync_RX.Syncdata.length);
+    if(g_Sync_RX.Syncdata.length != 0x3C && g_Sync_RX.Syncdata.length != 0x2C && g_Sync_RX.Syncdata.length != 0x2E && g_Sync_RX.Syncdata.length != 0x36) // 3c 2c
+    {           
         count = 0;
     }
-        
     // for(int i = 0;i<count;i++){printf("count:%d: %x ",i,g_Sync_RX.rawData[i]);} printf("\r\n");
     // printf("checkSum: %x checkSum1: %x \r\n",rxCalcCheckSum(),g_Sync_RX.Syncdata.data[g_Sync_RX.Syncdata.length]);
+    // printf("count: %d g_Sync_RX.Syncdata.length+3=%d\r\n",count,g_Sync_RX.Syncdata.length+3);
     if( (count != 0) && (count>=g_Sync_RX.Syncdata.length+3))
 	{	
 		checkSum = rxCalcCheckSum();
 		checkSum1 = g_Sync_RX.Syncdata.data[g_Sync_RX.Syncdata.length];
+        
 		if(checkSum == checkSum1 && g_Sync_RX.rawData[0] != 0)
 		{	
-            // printf("checkSum: %x checkSum1: %x \r\n",checkSum,checkSum1);
-            MFP_Cmd(g_Sync_RX.syncPacket.type,1);     // 解析主控盒数据
-            vTaskDelay(pdMS_TO_TICKS(2));
-            g_system_flag.mfp_tx_ready = true;      // 可以向MFP口发送数据
+            printf("crc ok mfp_send-ready \r\n");
 		    count = 0;	
+            mfp_queue_pop_send();                     // 接收完成后 发送队列
+                // MFP_Cmd(g_Sync_RX.syncPacket.type,0);     // 不主动发送
 		}
 		else
 		{	
-            // err++;	
+            // g_MFPData_t.sync_error.usartCheck_error++;
 			count = 0;
 		}
 	}
 }
 
-/*
-*   <主控盒-设备>串口接收函数
 */
+void mfp_datareceive_handler(uint8_t *p, uint16_t len)
+{
+    static uint32_t count = 0;
+    uint8_t checkSum = 0, checkSum1 = 0;
+    const uint32_t MAX_BUF_SIZE = sizeof(g_Sync_RX.rawData);  // 1024字节
+
+#if ENABLE_MFP_DETAIL_LOG
+    static uint32_t rx_count = 0;
+    printf("[RX#%u] recv %d bytes, total=%d\n", ++rx_count, len, count + len);
+#endif
+
+    // 缓冲区溢出保护（防御性编程）
+    if (count + len > MAX_BUF_SIZE) {
+        printf("[MFP_RX] ERROR: Buffer overflow! count=%d + len=%d > %d, reset\n", 
+               count, len, MAX_BUF_SIZE);
+        count = 0;
+        memset(g_Sync_RX.rawData, 0, sizeof(g_Sync_RX.rawData));
+        return;
+    }
+
+    memcpy(g_Sync_RX.rawData + count, p, len);
+    count += len;
+
+    // 判断是否至少收到了 "帧头+长度字段"
+    if (count >= 2) {
+        uint16_t frame_len = g_Sync_RX.Syncdata.length;
+
+        // 长度范围判断，防止乱包
+        if (frame_len > 80 || frame_len < 30) {
+            printf("[MFP_RX] ERROR: Invalid frame_len=%d! Reset (probable stray byte)\n", frame_len);
+            count = 0;
+            memset(g_Sync_RX.rawData, 0, sizeof(g_Sync_RX.rawData));
+            return;
+        }
+
+        // 收够了（长度+校验+帧头等）
+        if (count >= frame_len + 3) {
+            checkSum  = rxCalcCheckSum();
+            checkSum1 = g_Sync_RX.Syncdata.data[frame_len];
+
+            if (checkSum == checkSum1 && g_Sync_RX.rawData[0] != 0) {
+                // 校验通过，保存到独立的解析缓冲区（带线程安全保护）
+                if (g_MFP_Parsed_Mutex != NULL && 
+                    xSemaphoreTake(g_MFP_Parsed_Mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    g_MFP_Parsed_Len = frame_len + 3;
+                    memcpy(g_MFP_Parsed_Frame, g_Sync_RX.rawData, g_MFP_Parsed_Len);
+                    xSemaphoreGive(g_MFP_Parsed_Mutex);
+#if ENABLE_MFP_DETAIL_LOG
+                   //  printf("[RX#%u] CRC OK, saved to parsed buffer, len=%d\n", rx_count, g_MFP_Parsed_Len);
+#endif
+                } else {
+                    printf("[MFP_RX] WARNING: Failed to acquire mutex or mutex not initialized\n");
+                }
+                
+                mfp_queue_pop_send();
+            } else {
+                printf("[MFP_RX] CRC FAIL! calc=%02X recv=%02X\n", checkSum, checkSum1);
+            }
+            
+            // 清空接收缓冲区，为下一帧做准备
+            count = 0;
+            memset(g_Sync_RX.rawData, 0, sizeof(g_Sync_RX.rawData));
+        }
+#if ENABLE_MFP_DETAIL_LOG
+        else {
+            printf("[RX#%u] Wait more: %d < %d\n", rx_count, count, frame_len + 3);
+        }
+#endif
+    }
+}
+
+#define MFP_RX_BUF_SIZE 256
+
+typedef struct {
+    uint8_t buf[MFP_RX_BUF_SIZE];
+    uint16_t count;
+} mfp_rx_buffer_t;
+
+static mfp_rx_buffer_t rx_buf = {0};
+
+// 查找有效帧头
+static int find_valid_header(const uint8_t *buf, uint16_t count, uint16_t *header_pos)
+{
+    for (uint16_t i = 0; i < count - 1; i++) {
+        uint8_t length = buf[i];
+        uint8_t type = buf[i + 1];
+        
+        // 检查是否为有效的帧头
+        if (length >= 5 && length <= 100 && 
+            (type == 0x01 || type == 0x02 || type == 0x07)) {
+            *header_pos = i;
+            return 1; // 找到有效帧头
+        }
+    }
+    return 0; // 未找到有效帧头
+}
+
+static uint8_t calc_checksum(const uint8_t *data, uint16_t len)
+{
+    uint8_t sum = 0xFF;
+    for (int i = 0; i < len; i++) sum -= data[i];
+    return sum;
+}
+
 static void MFP_DataReceive_task(void *arg)
 {
     /* Configure parameters of an UART driver,
      * communication pins and install the driver */
     uart_config_t uart_config={
-        .baud_rate = ECHO_UART_BAUD_RATE,                // 波特率38400
+        .baud_rate = 38400,                // 波特率38400
         .data_bits = UART_DATA_8_BITS,                  // 8位数据位
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,          // 无硬件流控制
         .parity = UART_PARITY_EVEN,                     // 偶校验
@@ -2540,30 +2702,28 @@ static void MFP_DataReceive_task(void *arg)
 
     uart_event_t event;
 
-    ESP_ERROR_CHECK(uart_driver_install(ECHO_UART_PORT_NUM, BUF_SIZE * 2, 0, 20, &uart2_queue, 0));
+    ESP_ERROR_CHECK(uart_driver_install(ECHO_UART_PORT_NUM, BUF_SIZE * 2, 512, 20, &uart2_queue, 0));
     ESP_ERROR_CHECK(uart_param_config(ECHO_UART_PORT_NUM, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(ECHO_UART_PORT_NUM, ECHO_TEST_TXD, ECHO_TEST_RXD, ECHO_TEST_RTS, ECHO_TEST_CTS));
+    ESP_ERROR_CHECK(uart_set_pin(ECHO_UART_PORT_NUM, ECHO_TEST_TXD, ECHO_TEST_RXD, ECHO_TEST_RTS, ECHO_TEST_CTS));    // 设置接收超时，减少数据分帧（主控盒49字节需约12ms，设置为20个字符时间约5ms）
+    ESP_ERROR_CHECK(uart_set_rx_timeout(ECHO_UART_PORT_NUM, 20));
     // Configure a temporary buffer for the incoming data
     uint8_t *dtmp  = (uint8_t *) malloc(BUF_SIZE);
 
     while (1)
     {
-
         //Waiting for UART event.
         if (xQueueReceive(uart2_queue, (void *)&event, (TickType_t)portMAX_DELAY)) 
         {
+            // ESP_LOGI("UART", "UART event received: %d", event.type);
             memset(dtmp, 0, BUF_SIZE);
             //ESP_LOGI(TAG, "uart[%d] event:", ECHO_UART_PORT_NUM);
             switch (event.type)
             {
             //Event of UART receving data
-            /*We'd better handler data event fast, there would be much more data events than
-            other types of events. If we take too much time on data event, the queue might
-            be full.*/
             case UART_DATA:
-               //  ESP_LOGI(TAG, "[UART DATA]: %d", event.size);
+                // printf("size=%d \r", event.size);
                 uart_read_bytes(ECHO_UART_PORT_NUM, dtmp, event.size, portMAX_DELAY);
-                mfp_datareceive_handler(dtmp,event.size);
+                mfp_datareceive_handler(dtmp,event.size);   // 一次性收完一帧
                // ESP_LOGI(TAG, "[DATA EVT]:");
                 //uart_write_bytes(ECHO_UART_PORT_NUM, (const char*) dtmp, event.size);
                 break;
@@ -2591,6 +2751,7 @@ static void MFP_DataReceive_task(void *arg)
             //Event of UART parity check error
             case UART_PARITY_ERR:
                 ESP_LOGI(TAG, "uart parity error");
+                // uart_flush_input(ECHO_UART_PORT_NUM);  // 清空当前错误帧
                 break;
             //Event of UART frame error
             case UART_FRAME_ERR:
@@ -2626,55 +2787,39 @@ static void MFP_DataReceive_task(void *arg)
         }            
     }
 }
-/*
-*   MFP口发送事件：15ms一次扫描mfp_tx_ready标志位进行调用数据发送函数 （感觉不需要）
-static void MFP_DataSend_task(void *arg)
-{
-    while (1) 
-    {       
-        if (g_system_flag.mfp_tx_ready) 
-        {
-            // 调用数据发送处理函数
-            mfp_datasend_handler();
 
-            // 发送后将 mfp_tx_ready 标志清除
-            g_system_flag.mfp_tx_ready = 0;
-        }
-        vTaskDelay(pdMS_TO_TICKS(15));
-    }
-    vTaskDelete(NULL);
+/*
+*  10ms 定时器 
+
+void my_timer_callback(TimerHandle_t xTimer)
+{
+    if(g_MFPData_t.syncModeSendInterval > 0)
+		g_MFPData_t.syncModeSendInterval--;
+    
+}
+
+void start_10ms_timer()
+{
+    my_timer = xTimerCreate("myTimer", pdMS_TO_TICKS(TIMER_PERIOD_MS), pdTRUE, NULL, my_timer_callback);
+    xTimerStart(my_timer, 0);
 }
 */
-static void MFP_DataSend_task(void *arg)
+static void handle_snore_trigger_task(void *arg)
 {
-    static uint8_t send_attempts = 0;
-
     while (1) 
     {       
-        if (g_system_flag.mfp_tx_ready) 
+ 
+        if (device_info->snore->snore_state.triggered_flag || device_info->snore->snore_state.triggered_flag_demo) // 处理打鼾干预（不重复发就不清 mfp_tx_ready） 
         {
-            if (g_system_flag.Key_send_flag)        // 优先处理 MQTT/ BLE 数据下发，发送 3 次
-            {
-                mfp_dateSend();
-                send_attempts++;
-                if (send_attempts >= 3) {
-                    g_system_flag.Key_send_flag = 0;
-                    send_attempts = 0;
-                    g_system_flag.mfp_tx_ready = 0;
-                }
+            if (device_info->snore->snore_state.triggered_flag) {
+                handle_snore_trigger(false);
+            } else {
+                // printf("demo triggerd \r\n");
+                handle_snore_trigger(true);
             }
-            
-            if (device_info->snore->snore_state.triggered_flag || device_info->snore->snore_state.triggered_flag_demo) // 处理打鼾干预（不重复发就不清 mfp_tx_ready） 
-            {
-                if (device_info->snore->snore_state.triggered_flag) {
-                    handle_snore_trigger(false);
-                } else {
-                    handle_snore_trigger(true);
-                }
-                g_system_flag.mfp_tx_ready = 0;
-            }
+            g_system_flag.mfp_tx_ready = 0;
         }
-        vTaskDelay(pdMS_TO_TICKS(15));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
     vTaskDelete(NULL);
 }
@@ -2686,118 +2831,144 @@ static void MFP_DataSend_task(void *arg)
  */
 int mqtt_ble_data_parser_cb(uint8_t *data)
 {
-    if (data[0] != 0xAA)    // 帧头判断
+    uint32_t key_value = 0;
+    if (data[0] == 0xAA)    // 帧头判断
     {
-        return -1;
-    }
-    // 要加入和校验的（现在还没加）
-    nvs_handle nvs_config_handler;
-    char *send_json_value = NULL;
-    // 解析
-    switch (data[1])                            
-    {
-        case 0x00:
-            printf("参数查询 \r\n");
-            if(data[4] == 0x01)     // 打鼾干预参数查询
-            {
-                send_json_value = (char *)malloc(512);
-                if (send_json_value == NULL) {
-                    printf("内存分配失败！\n");
-                    return -1;
-                }
-                memset(send_json_value, 0, 512);
-                check_stack_space();
-                // 构建 JSON 字符串
-                sprintf(send_json_value, "{\"id\":\"%s\",\"ts\":%d,\"type\":16,\"report\":\"snore_param\",\"data\":{"
-                                        "\"triggered_flag\":%d,"
-                                        "\"triggered_flag_demo\":%d,"
-                                        "\"upHoldTime\":%d,"
-                                        "\"threshold\":%d,"
-                                        "\"threshold5s\":%d,"
-                                        "\"pwm\":%d,"
-                                        "\"tmr\":%d,"
-                                        "\"lastTriggeredTime\":%d,"
-                                        "\"isIntervening\":%d}}",             
-                                        device_info->id,
-                                        device_info->utc.time_stamp,
-                                        device_info->snore->snore_state.triggered_flag,                  
-                                        device_info->snore->snore_state.triggered_flag_demo,
-                                        device_info->snore->snore_parameters.up_hold_time_s,
-                                        device_info->snore->snore_parameters.threshold,
-                                        device_info->snore->snore_parameters.threshold_5s,
-                                        device_info->snore->snore_parameters.pwm,
-                                        device_info->snore->snore_parameters.tmr,
-                                        device_info->snore->snore_state.last_triggered_time_s,
-                                        device_info->snore->snore_state.is_intervening);
-                
-                printf("上报打鼾干预参数: %s\n", send_json_value);
-
-                // MQTT 发送
-                if (get_mqtt_status()) {
-                    if (mqtt_send_mutex == true) {
-                        mqtt_send_mutex = false;
-                        esp_mqtt_client_publish(client, mc_cli_data_publish_topic, (char *)send_json_value, strlen((char *)send_json_value), 0, 0);
-                        mqtt_send_mutex = true;
+        // 要加入和校验的（现在还没加）
+        nvs_handle nvs_config_handler;
+        char *send_json_value = NULL;
+        // 解析
+        switch (data[1])                            
+        {
+            case 0x00:
+                if(data[4] == 0x01)     // 打鼾干预参数查询
+                {
+                    send_json_value = (char *)malloc(512);
+                    if (send_json_value == NULL) {
+                        printf("内存分配失败！\n");
+                        return -1;
                     }
+                    memset(send_json_value, 0, 512);
+                    check_stack_space();
+                    // 构建 JSON 字符串
+                    sprintf(send_json_value, "{\"id\":\"%s\",\"ts\":%d,\"type\":16,\"report\":\"snore_param\",\"data\":{"
+                                            "\"triggered_flag\":%d,"
+                                            "\"triggered_flag_demo\":%d,"
+                                            "\"upHoldTime\":%d,"
+                                            "\"threshold\":%d,"
+                                            "\"threshold5s\":%d,"
+                                            "\"pwm\":%d,"
+                                            "\"tmr\":%d,"
+                                            "\"lastTriggeredTime\":%d,"
+                                            "\"isIntervening\":%d}}",             
+                                            device_info->id,
+                                            device_info->utc.time_stamp,
+                                            device_info->snore->snore_state.triggered_flag,                  
+                                            device_info->snore->snore_state.triggered_flag_demo,
+                                            device_info->snore->snore_parameters.up_hold_time_s,
+                                            device_info->snore->snore_parameters.threshold,
+                                            device_info->snore->snore_parameters.threshold_5s,
+                                            device_info->snore->snore_parameters.pwm,
+                                            device_info->snore->snore_parameters.tmr,
+                                            device_info->snore->snore_state.last_triggered_time_s,
+                                            device_info->snore->snore_state.is_intervening);
+                    
+                    printf("mqtt put打鼾干预参数: %s\n", send_json_value);
+
+                    // MQTT 发送
+                    if (get_mqtt_status()) {
+                        if (mqtt_send_mutex == true) {
+                            mqtt_send_mutex = false;
+                            esp_mqtt_client_publish(client, mc_cli_data_publish_topic, (char *)send_json_value, strlen((char *)send_json_value), 0, 0);
+                            mqtt_send_mutex = true;
+                        }
+                    }
+                    if (send_json_value != NULL) {
+                        free(send_json_value);
+                    }
+                }else if(data[4] == 0x02) // 主控盒参数查询
+                {
+                    // printf("查询主控盒参数\n");
+                    MFP_Cmd(data[4],1);
+                }else if(data[4] == 0x04) // 闹钟指令控制
+                {
+                    printf("闹钟指令控制 \r\n");
+                    /* APP 下发闹钟指令后，120s 内禁止新的打鼾干预触发（不打断当前干预） */
+                    snore_blocked_until_s = (uint32_t)(xTaskGetTickCount() / pdMS_TO_TICKS(1000)) + 120;
                 }
-                if (send_json_value != NULL) {
-                    free(send_json_value);
+                break;
+
+            case 0x01:
+                // printf("按键控制 \r\n");
+                // 提取键值（注意是低字节在前）
+                key_value = (data[5] << 24) | (data[6] << 16) | (data[7] << 8) | data[8];
+                // printf("键值=0x%08X\n", key_value);
+                // 判断是否为指定键值
+                if (key_value == 0x00000040 || key_value == 0x00000008)
+                {
+                    // 清除打鼾干预状态
+                    device_info->snore->snore_state.triggered_flag = false;
+                    device_info->snore->snore_state.triggered_flag_demo = false;
+                    device_info->snore->snore_state.is_intervening = false;
+                    device_info->snore->snore_state.last_triggered_time_s = 0;
+                    // printf("清除打鼾干预状态\n");
                 }
-            }else if(data[4] == 0x02) // 主控盒参数查询
-            {
-                MFP_Cmd(data[4],1);
-            }
-            break;
+                mfp_queue_push(&data[3], data[2], 2);       // 将数据放入队列
+                break;
 
-        case 0x01:
-            printf("按键控制 \r\n");
-            memcpy(g_Sync_TX.rawData, &data[3], data[2]);   // 存入全局变量
-            g_system_flag.Key_send_flag = true;
-            break;
+            case 0x02:
+                printf("演示流程 \r\n");
+                snore_parameters_demo.up_hold_time_s = ((uint32_t)data[5] << 24) | ((uint32_t)data[6] << 16) | ((uint32_t)data[7] << 8)  | ((uint32_t)data[8]);
+                snore_parameters_demo.threshold_5s = data[9];
+                snore_parameters_demo.threshold_5s = data[10];
+                snore_parameters_demo.pwm = data[11];
+                snore_parameters_demo.tmr = data[12];
+                
+                device_info->snore->snore_state.triggered_flag_demo = true;  // 演示触发标志
+                printf("snore_demo: up_hold_time_s = %d, threshold_5s = %d, threshold = %d, pwm = %d, tmr = %d\n",snore_parameters_demo.up_hold_time_s,
+                                                                                                snore_parameters_demo.threshold_5s,
+                                                                                                snore_parameters_demo.threshold,
+                                                                                                snore_parameters_demo.pwm,
+                                                                                                snore_parameters_demo.tmr);
+                            
+                // handle_snore_trigger(device_info->snore->snore_state.triggered_flag_demo);
+                break;
+                
+            case 0x03:
+                printf("参数设置 \r\n");
+                device_info->snore->snore_parameters.up_hold_time_s = ((uint32_t)data[5] << 24) | ((uint32_t)data[6] << 16) | ((uint32_t)data[7] << 8) | ((uint32_t)data[8]);
+                device_info->snore->snore_parameters.threshold_5s  = data[9];
+                device_info->snore->snore_parameters.threshold     = data[10];       //打鼾包阈值
+                device_info->snore->snore_parameters.pwm           = data[11];
+                device_info->snore->snore_parameters.tmr           = data[12];
 
-        case 0x02:
-            printf("演示流程 \r\n");
-            snore_parameters_demo.up_hold_time_s = ((uint32_t)data[5] << 24) | ((uint32_t)data[6] << 16) | ((uint32_t)data[7] << 8)  | ((uint32_t)data[8]);
-            snore_parameters_demo.threshold_5s = data[9];
-            snore_parameters_demo.threshold_5s = data[10];
-            snore_parameters_demo.pwm = data[11];
-            snore_parameters_demo.tmr = data[12];
-            
-            device_info->snore->snore_state.triggered_flag_demo = true;  // 演示触发标志
-            break;
-            
-        case 0x03:
-            printf("参数设置 \r\n");
-            device_info->snore->snore_parameters.up_hold_time_s = ((uint32_t)data[5] << 24) | ((uint32_t)data[6] << 16) | ((uint32_t)data[7] << 8) | ((uint32_t)data[8]);
-            device_info->snore->snore_parameters.threshold_5s  = data[9];
-            device_info->snore->snore_parameters.threshold     = data[10];       //打鼾包阈值
-            device_info->snore->snore_parameters.pwm           = data[11];
-            device_info->snore->snore_parameters.tmr           = data[12];
+                printf("snore: up_hold_time_s = %d, threshold_5s = %d, threshold = %d, pwm = %d, tmr = %d\n",device_info->snore->snore_parameters.up_hold_time_s,
+                                                                                                            device_info->snore->snore_parameters.threshold_5s,
+                                                                                                            device_info->snore->snore_parameters.threshold,
+                                                                                                            device_info->snore->snore_parameters.pwm,
+                                                                                                            device_info->snore->snore_parameters.tmr);
+                                                                                                            
+                ESP_ERROR_CHECK(nvs_open("config_cfg", NVS_READWRITE, &nvs_config_handler));                                                                         
+                ESP_ERROR_CHECK(nvs_set_blob(nvs_config_handler, "snore_param",  &device_info->snore->snore_parameters, sizeof(snore_parameters_t)));
+                ESP_ERROR_CHECK(nvs_commit(nvs_config_handler));
+                nvs_close(nvs_config_handler);
+                break;
 
-            printf("snore: up_hold_time_s = %d, threshold_5s = %d, threshold = %d, pwm = %d, tmr = %d\n",device_info->snore->snore_parameters.up_hold_time_s,
-                                                                                                        device_info->snore->snore_parameters.threshold_5s,
-                                                                                                        device_info->snore->snore_parameters.threshold,
-                                                                                                        device_info->snore->snore_parameters.pwm,
-                                                                                                        device_info->snore->snore_parameters.tmr);
-                                                                                                        
-            ESP_ERROR_CHECK(nvs_open("config_cfg", NVS_READWRITE, &nvs_config_handler));                                                                         
-            ESP_ERROR_CHECK(nvs_set_blob(nvs_config_handler, "snore_param",  &device_info->snore->snore_parameters, sizeof(snore_parameters_t)));
-            ESP_ERROR_CHECK(nvs_commit(nvs_config_handler));
-            nvs_close(nvs_config_handler);
-            break;
-
-        case 0x04:
-        printf("按摩控制 \r\n");
-            break;
-
-        case 0x05:
-        printf("感应灯控制 \r\n");
-             break;
-
-        default:
-            return -2;
+            case 0x04:
+            printf("停止命令 \r\n");
+                mfp_tx_queue_clear();                       // 为了避免溢出导致未收到停止，清空队列
+                mfp_queue_push(&data[3], data[2], 2);       // 将数据放入队列
+                break;
+            case 0x05:
+            printf("停止命令 \r\n");
+                mfp_tx_queue_clear();                       // 为了避免溢出导致未收到停止，清空队列
+                // mfp_queue_push(&data[3], data[2], 2);       // 将数据放入队列
+                break;
+            default:
+                return -2;
+        }
     }
-    check_stack_space();
+    // check_stack_space();
     return 0;
 }
 
@@ -2871,28 +3042,49 @@ void vlsit_task(void *pv){
 
 void app_control_server(void)
 {
+    // 初始化MFP队列
+    mfp_tx_queue_init();
+    
+    // 创建MFP解析缓冲区的互斥锁（线程安全保护）
+    g_MFP_Parsed_Mutex = xSemaphoreCreateMutex();
+    if (g_MFP_Parsed_Mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create MFP parsed mutex!");
+    } else {
+        ESP_LOGI(TAG, "MFP parsed mutex created successfully");
+    }
+    
     //ble 数据处理
-    xTaskCreatePinnedToCore(ble_data_parser_task, "ble_task", 1024*6, NULL, 5, NULL, 1);   //1024*2//缩减1024*5
+    xTaskCreatePinnedToCore(ble_data_parser_task, "ble_task", 1024*6, NULL, 6, NULL, 1);   //1024*2//缩减1024*5
     //一键配网
     xTaskCreatePinnedToCore(one_key_config_wifi_task, "one_key_config_wifi_task", 1024*2, NULL, 6, NULL, 1);   //缩减1024*2
-    //uart 数据处理
+    
+    //uart 数据处理（博创传感器）
     xTaskCreatePinnedToCore(uart_data_parser_task, "uart_task", 1024*10, NULL, 5, &uart_handle, 1);//缩减2048*13
     //utc 获取
     xTaskCreatePinnedToCore(utc_get_task, "utc_get", 1024*6, NULL, 3, NULL, 1);      //缩减4096*2   ok
-    //终端显示
-    xTaskCreatePinnedToCore(data_display_task, "data_display", 1024*4, NULL, 2, NULL, 1);     
-
+    
+    //系统控制任务（LED + 打鼾检测）- 量产必须保留
+    xTaskCreatePinnedToCore(system_control_task, "sys_ctrl", 1024*2, NULL, 2, NULL, 1);
+    
     xTaskCreatePinnedToCore(Task_scheduling, "Task_scheduling", 1024*2, NULL, 6, NULL, 1);//缩减2048*7
     // xTaskCreatePinnedToCore(key_task, "key_task", 1024, NULL, 6, NULL, 1);//缩减2048*7
 
     xTaskCreate(MFP_DataReceive_task, "MFP_DataReceive_task", ECHO_TASK_STACK_SIZE, NULL, 10, NULL);     // mfp口的接收任务 1024*4
 
-    xTaskCreate(MFP_DataSend_task, "MFP_DataSend_task ", ECHO_TASK_STACK_SIZE, NULL, 1, NULL); // mfp口发送任务 1024*4
+    xTaskCreate(handle_snore_trigger_task, "MFP_DataSend_task ", ECHO_TASK_STACK_SIZE, NULL, 7, NULL); // 打鼾干预任务 1024*4
 
     xTaskCreatePinnedToCore(mqtt_key_parser_task, "mqtt_key_parser_task", 1024*4, NULL, 5, NULL, 1);
 
+    //调试显示任务 - 通过 ENABLE_DEBUG_DISPLAY 宏控制
+#if ENABLE_DEBUG_DISPLAY
+    xTaskCreatePinnedToCore(data_display_task, "data_display", 1024*4, NULL, 2, NULL, 1);
+#endif
+    // 性能监控任务 - 通过 ENABLE_PERFORMANCE_MON 宏控制
+#if ENABLE_PERFORMANCE_MON
+    xTaskCreatePinnedToCore(vlsit_task, "vlsit_task", 1024*4, NULL, 2, NULL, 1);  // 需要开启 FreeRTOS stats
+#endif
+
     // xTaskCreatePinnedToCore(wifi_check_task, "wifi_check_task", 1024*4, NULL, 5, NULL, 1); 
-    // xTaskCreatePinnedToCore(vlsit_task, "vlsit_task", 1024*4, NULL, 2, NULL, 1);         // 用于检查堆栈空间和有无阻塞的打印信息 Enable FreeRTOS stats 需要开启
 }
 
 void set_sleep_up_flag(uint8_t data)
