@@ -74,6 +74,7 @@ static uint16_t  sensor_ota_mode_cnt = 0;
 static uint8_t set_mode_flag = 2;   // xinzeng:set_mode_flag 强制生成报告
 static char report_cli_data[2]={0},cli_report_name[32]={0};
 static snore_parameters_t snore_parameters_demo = {0};    //打鼾干预延时流程参数
+static uint32_t snore_blocked_until_s = 0;                //闹钟指令后 120s 内禁止打鼾干预（开机秒数）
 
 #define ECHO_TEST_TXD (19)
 #define ECHO_TEST_RXD (25)
@@ -2311,104 +2312,61 @@ void handle_snore_trigger(bool is_demo)
 
     // 如果未在干预中，则立即发送缓启动抬升命令,并记录时间
     if (!device_info->snore->snore_state.is_intervening) {
-        mfp_tx_queue_clear();
-        prepare_mfp_SOFT_START(KEY_MEMORY4, params->pwm, params->tmr,3);  // 入队: 缓启动抬升命令3次
-
-
-
-        device_info->snore->snore_state.is_intervening = true;
-        device_info->snore->snore_state.last_triggered_time_s = device_info->utc.time_stamp;
-
-
-        // 打鼾干预触发时，上报 MQTT 数据
-        char send_json_value[512];
-        memset(send_json_value, 0, sizeof(send_json_value));
-        printf("触发打鼾干预%s: triggered = %d, 正在干预: in_progress = %d \r\n", 
-        is_demo ? "(演示)" : "", 
-        is_demo ? device_info->snore->snore_state.triggered_flag_demo : device_info->snore->snore_state.triggered_flag, 
-        device_info->snore->snore_state.is_intervening);
-        // 构建 JSON 字符串
-        sprintf(send_json_value, "{\"id\":\"%s\",\"ts\":%d,\"type\":16,\"report\":\"snore_param\",\"data\":{"
-                                    "\"triggered_flag\":%d,"
-                                    "\"triggered_flag_demo\":%d,"
-                                    "\"upHoldTime\":%d,"
-                                    "\"threshold\":%d,"
-                                    "\"threshold5s\":%d,"
-                                    "\"pwm\":%d,"
-                                    "\"tmr\":%d,"
-                                    "\"lastTriggeredTime\":%d,"
-                                    "\"isIntervening\":%d}}",             
-                                    device_info->id,
-                                    device_info->utc.time_stamp,
-                                    device_info->snore->snore_state.triggered_flag,                  
-                                    device_info->snore->snore_state.triggered_flag_demo,
-                                    params->up_hold_time_s,
-                                    params->threshold,
-                                    params->threshold_5s,
-                                    params->pwm,
-                                    params->tmr,
-                                    device_info->snore->snore_state.last_triggered_time_s,
-                                    device_info->snore->snore_state.is_intervening);
-        
-        printf("上报打鼾干预数据: %s\n", send_json_value);
-
-        // MQTT 发送
-        if (get_mqtt_status()) {
-            if (mqtt_send_mutex == true) {
-                mqtt_send_mutex = false;
-                esp_mqtt_client_publish(client, mc_cli_data_publish_topic, (char *)send_json_value, strlen((char *)send_json_value), 0, 0);
-                mqtt_send_mutex = true;
+        /* 闹钟指令后 120s 内不执行新打鼾干预 */
+        if (snore_blocked_until_s != 0) {
+            uint32_t now_s = (uint32_t)(xTaskGetTickCount() / pdMS_TO_TICKS(1000));
+            if (now_s < snore_blocked_until_s) {
+                if (is_demo) {
+                    device_info->snore->snore_state.triggered_flag_demo = false;
+                } else {
+                    device_info->snore->snore_state.triggered_flag = false;
+                }
+                return;
             }
         }
-    } else {
-        // 如果已经触发，则等到冷却时间后再发送缓启动降下命令
-        uint32_t up_hold_time = is_demo ? snore_parameters_demo.up_hold_time_s : device_info->snore->snore_parameters.up_hold_time_s;
 
-        if ((device_info->utc.time_stamp - device_info->snore->snore_state.last_triggered_time_s) >= up_hold_time) {
-            mfp_tx_queue_clear();
-            prepare_mfp_SOFT_START(KEY_ALLFATE, params->pwm, 0xFE,3);  // 入队: 缓启动抬升命令3次
+        printf("触发打鼾干预%s: triggered = %d, 正在干预: in_progress = %d \r\n", 
+               is_demo ? "(演示)" : "", 
+               is_demo ? device_info->snore->snore_state.triggered_flag_demo : device_info->snore->snore_state.triggered_flag, 
+               device_info->snore->snore_state.is_intervening);
 
-            // 清除打鼾事件标志，结束本次打鼾干预
-
-            device_info->snore->snore_state.is_intervening = false;
-            if (is_demo) {
-                device_info->snore->snore_state.triggered_flag_demo = false;
-            } else {
-                device_info->snore->snore_state.triggered_flag = false;
-            }
+        prepare_mfp_command(KEYS_TYPE_SOFT_START, KEY_MEMORY4, params->pwm, params->tmr);
+        mfp_dateSend();
+        send_attempts++;
+        if (send_attempts >= 3) {
             send_attempts = 0;
+            device_info->snore->snore_state.is_intervening = true;
+            device_info->snore->snore_state.last_triggered_time_s = device_info->utc.time_stamp;
+
 
             // 打鼾干预触发时，上报 MQTT 数据
             char send_json_value[512];
             memset(send_json_value, 0, sizeof(send_json_value));
-            printf("打鼾干预结束%s: triggered = %d, 正在干预: in_progress = %d \r\n", 
-                is_demo ? "(演示)" : "", 
-                is_demo ? device_info->snore->snore_state.triggered_flag_demo : device_info->snore->snore_state.triggered_flag, 
-                device_info->snore->snore_state.is_intervening);
+            
             // 构建 JSON 字符串
             sprintf(send_json_value, "{\"id\":\"%s\",\"ts\":%d,\"type\":16,\"report\":\"snore_param\",\"data\":{"
-                                    "\"triggered_flag\":%d,"
-                                    "\"triggered_flag_demo\":%d,"
-                                    "\"upHoldTime\":%d,"
-                                    "\"threshold\":%d,"
-                                    "\"threshold5s\":%d,"
-                                    "\"pwm\":%d,"
-                                    "\"tmr\":%d,"
-                                    "\"lastTriggeredTime\":%d,"
-                                    "\"isIntervening\":%d}}",             
-                                    device_info->id,
-                                    device_info->utc.time_stamp,
-                                    device_info->snore->snore_state.triggered_flag,                  
-                                    device_info->snore->snore_state.triggered_flag_demo,
-                                    params->up_hold_time_s,
-                                    params->threshold,
-                                    params->threshold_5s,
-                                    params->pwm,
-                                    params->tmr,
-                                    device_info->snore->snore_state.last_triggered_time_s,
-                                    device_info->snore->snore_state.is_intervening);
+                                      "\"triggered_flag\":%d,"
+                                      "\"triggered_flag_demo\":%d,"
+                                      "\"upHoldTime\":%d,"
+                                      "\"threshold\":%d,"
+                                      "\"threshold5s\":%d,"
+                                      "\"pwm\":%d,"
+                                      "\"tmr\":%d,"
+                                      "\"lastTriggeredTime\":%d,"
+                                      "\"isIntervening\":%d}}",             
+                                        device_info->id,
+                                        device_info->utc.time_stamp,
+                                        device_info->snore->snore_state.triggered_flag,                  
+                                        device_info->snore->snore_state.triggered_flag_demo,
+                                        params->up_hold_time_s,
+                                        params->threshold,
+                                        params->threshold_5s,
+                                        params->pwm,
+                                        params->tmr,
+                                        device_info->snore->snore_state.last_triggered_time_s,
+                                        device_info->snore->snore_state.is_intervening);
             
-            printf("上报打鼾干预数据(结束): %s\n", send_json_value);
+            printf("上报打鼾干预数据: %s\n", send_json_value);
 
             // MQTT 发送
             if (get_mqtt_status()) {
@@ -2419,9 +2377,72 @@ void handle_snore_trigger(bool is_demo)
                 }
             }
         }
+    } else {
+        // 如果已经触发，则等到冷却时间后再发送缓启动降下命令
+        uint32_t up_hold_time = is_demo ? snore_parameters_demo.up_hold_time_s : device_info->snore->snore_parameters.up_hold_time_s;
+
+        if ((device_info->utc.time_stamp - device_info->snore->snore_state.last_triggered_time_s) >= up_hold_time) {
+            printf("打鼾干预结束%s: triggered = %d, 正在干预: in_progress = %d \r\n", 
+                is_demo ? "(演示)" : "", 
+                is_demo ? device_info->snore->snore_state.triggered_flag_demo : device_info->snore->snore_state.triggered_flag, 
+                device_info->snore->snore_state.is_intervening);
+
+            prepare_mfp_command(KEYS_TYPE_SOFT_START, KEY_ALLFATE, params->pwm, params->tmr);
+            mfp_dateSend();
+
+            // 清除打鼾事件标志，结束本次打鼾干预
+            send_attempts++;
+            if (send_attempts >= 3) {
+                device_info->snore->snore_state.is_intervening = false;
+                if (is_demo) {
+                    device_info->snore->snore_state.triggered_flag_demo = false;
+                } else {
+                    device_info->snore->snore_state.triggered_flag = false;
+                }
+                send_attempts = 0;
+
+                // 打鼾干预触发时，上报 MQTT 数据
+                char send_json_value[512];
+                memset(send_json_value, 0, sizeof(send_json_value));
+                
+                // 构建 JSON 字符串
+                sprintf(send_json_value, "{\"id\":\"%s\",\"ts\":%d,\"type\":16,\"report\":\"snore_param\",\"data\":{"
+                                        "\"triggered_flag\":%d,"
+                                        "\"triggered_flag_demo\":%d,"
+                                        "\"upHoldTime\":%d,"
+                                        "\"threshold\":%d,"
+                                        "\"threshold5s\":%d,"
+                                        "\"pwm\":%d,"
+                                        "\"tmr\":%d,"
+                                        "\"lastTriggeredTime\":%d,"
+                                        "\"isIntervening\":%d}}",             
+                                        device_info->id,
+                                        device_info->utc.time_stamp,
+                                        device_info->snore->snore_state.triggered_flag,                  
+                                        device_info->snore->snore_state.triggered_flag_demo,
+                                        params->up_hold_time_s,
+                                        params->threshold,
+                                        params->threshold_5s,
+                                        params->pwm,
+                                        params->tmr,
+                                        device_info->snore->snore_state.last_triggered_time_s,
+                                        device_info->snore->snore_state.is_intervening);
+                
+                printf("上报打鼾干预数据(结束): %s\n", send_json_value);
+
+                // MQTT 发送
+                if (get_mqtt_status()) {
+                    if (mqtt_send_mutex == true) {
+                        mqtt_send_mutex = false;
+                        esp_mqtt_client_publish(client, mc_cli_data_publish_topic, (char *)send_json_value, strlen((char *)send_json_value), 0, 0);
+                        mqtt_send_mutex = true;
+                    }
+                }
+
+            }
+        }
     }
 }
-
 
 void syncPacket_to_hex_str(const void* packet, size_t size, char* out_buf, size_t buf_size) {
     const uint8_t* data = (const uint8_t*)packet;
@@ -2666,140 +2687,6 @@ static uint8_t calc_checksum(const uint8_t *data, uint16_t len)
     for (int i = 0; i < len; i++) sum -= data[i];
     return sum;
 }
-/*
-void mfp_datareceive_handler(uint8_t *p, uint16_t len)
-{
-    for (int i = 0; i < len; i++) {
-
-        // 缓冲区防溢出
-        if (rx_buf.count >= MFP_RX_BUF_SIZE) {
-            rx_buf.count = 0;
-            memset(rx_buf.buf, 0, sizeof(rx_buf.buf));
-            continue;
-        }
-
-        // 写入字节
-        rx_buf.buf[rx_buf.count++] = p[i];
-
-        // 至少要有 length + type 才能判断
-        if (rx_buf.count >= 2) {
-            // 查找有效帧头
-            uint16_t header_pos = 0;
-            if (find_valid_header(rx_buf.buf, rx_buf.count, &header_pos)) {
-                // 找到有效帧头，移除前面的无效数据
-                if (header_pos > 0) {
-                    memmove(rx_buf.buf, rx_buf.buf + header_pos, rx_buf.count - header_pos);
-                    rx_buf.count -= header_pos;
-                }
-                
-                uint8_t frame_len = rx_buf.buf[0];
-                uint8_t frame_type = rx_buf.buf[1];
-                
-                // printf("[FRAME] Found header: len=%d, type=0x%02X\n", frame_len, frame_type);
-            } else {
-                // 未找到有效帧头，清空缓冲区
-                rx_buf.count = 0;
-                continue;
-            }
-            
-            uint8_t frame_len = rx_buf.buf[0];
-
-            // 判断是否收够整帧：length + type + checksum = 3字节
-            if (rx_buf.count >= frame_len + 3) {
-                uint8_t calc = calc_checksum(rx_buf.buf, frame_len + 1);
-                uint8_t recv = rx_buf.buf[frame_len + 2];
-
-                if (calc == recv) {
-                    // ✅ 校验通过，一帧完整
-                    printf("[MFP_RX] Frame OK, len=%d type=0x%02X\n", frame_len, rx_buf.buf[1]);
-
-                    if (rx_buf.buf[1] == 0x07) {
-                        memcpy(g_Sync_RX.rawData, rx_buf.buf, frame_len + 3);
-                        printf("g_Sync_RX.rawData:\r"); for(int i = 0;i<frame_len+3;i++){printf("%02X ",g_Sync_RX.rawData[i]); }printf("\n");
-                        mfp_queue_pop_send(); 
-                    } else {
-                        printf("[MFP CMD] len=%d, key=%02X cmd=%02X\n", frame_len, rx_buf.buf[2], rx_buf.buf[frame_len-1]);
-                    }
-                } else {
-                    // ❌ 校验失败，丢弃重来
-                    printf("[MFP_RX] CRC fail! calc=%02X recv=%02X\n", calc, recv);
-                }
-
-                // 清空缓冲区，准备下一帧
-                rx_buf.count = 0;
-                memset(rx_buf.buf, 0, sizeof(rx_buf.buf));
-            }
-        }
-    }
-}
-
-
-void mfp_datareceive_handler(uint8_t *p, uint16_t len)
-{
-    static uint32_t count = 0;
-    uint8_t checkSum = 0, recvCheck = 0;
-
-#if ENABLE_MFP_DETAIL_LOG
-    static uint32_t rx_count = 0;
-    printf("[RX#%u] recv %d bytes, total=%d\n", ++rx_count, len, count + len);
-#endif
-
-    // 缓存拼接
-    if (count + len > sizeof(g_Sync_RX.rawData)) {
-        printf("[MFP_RX] Buffer overflow, reset!\n");
-        count = 0;
-        memset(g_Sync_RX.rawData, 0, sizeof(g_Sync_RX.rawData));
-        return;
-    }
-    memcpy(g_Sync_RX.rawData + count, p, len);
-    count += len;
-
-    // 尝试解析多帧（例如粘包）
-    while (count >= 2) {
-        uint8_t frame_len = g_Sync_RX.Syncdata.length;
-        uint8_t frame_type = g_Sync_RX.Syncdata.type;
-
-        //  长度异常，丢1字节重新同步
-        if (frame_len < 4 || frame_len > 100) {
-            printf("[MFP_RX] Invalid len=%d, drop 1B\n", frame_len);
-            memmove(g_Sync_RX.rawData, g_Sync_RX.rawData + 1, --count);
-            continue;
-        }
-
-        //  非主控盒类型（type ≠ 0x07）直接跳过
-        if (frame_type != 0x07) {
-#if ENABLE_MFP_DETAIL_LOG
-            printf("[MFP_RX] Skip non-0x07 frame type=%02X\n", frame_type);
-#endif
-            memmove(g_Sync_RX.rawData, g_Sync_RX.rawData + 1, --count);
-            continue;
-        }
-
-        // 🧩 判断是否已收完整帧
-        if (count < frame_len + 3)
-            break;  // 未接收完整，等待下次
-
-        // ✅ 校验
-        checkSum = rxCalcCheckSum();               // 你现有的校验函数
-        recvCheck = g_Sync_RX.Syncdata.data[frame_len];
-
-        if (checkSum == recvCheck && g_Sync_RX.rawData[0] != 0) {
-#if ENABLE_MFP_DETAIL_LOG
-            printf("[MFP_RX] Valid frame len=%d type=0x%02X\n", frame_len, frame_type);
-#endif
-            mfp_queue_pop_send();  // ✅ 只反馈主控盒
-        } else {
-            printf("[MFP_RX] CRC fail calc=%02X recv=%02X\n", checkSum, recvCheck);
-        }
-
-        // 移除当前帧（支持粘包）
-        uint16_t consumed = frame_len + 3;
-        memmove(g_Sync_RX.rawData, g_Sync_RX.rawData + consumed, count - consumed);
-        count -= consumed;
-    }
-}
-*/
-  // <主控盒-设备>串口接收函数
 
 static void MFP_DataReceive_task(void *arg)
 {
@@ -2817,9 +2704,7 @@ static void MFP_DataReceive_task(void *arg)
 
     ESP_ERROR_CHECK(uart_driver_install(ECHO_UART_PORT_NUM, BUF_SIZE * 2, 512, 20, &uart2_queue, 0));
     ESP_ERROR_CHECK(uart_param_config(ECHO_UART_PORT_NUM, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(ECHO_UART_PORT_NUM, ECHO_TEST_TXD, ECHO_TEST_RXD, ECHO_TEST_RTS, ECHO_TEST_CTS));
-    
-    // 设置接收超时，减少数据分帧（主控盒49字节需约12ms，设置为20个字符时间约5ms）
+    ESP_ERROR_CHECK(uart_set_pin(ECHO_UART_PORT_NUM, ECHO_TEST_TXD, ECHO_TEST_RXD, ECHO_TEST_RTS, ECHO_TEST_CTS));    // 设置接收超时，减少数据分帧（主控盒49字节需约12ms，设置为20个字符时间约5ms）
     ESP_ERROR_CHECK(uart_set_rx_timeout(ECHO_UART_PORT_NUM, 20));
     // Configure a temporary buffer for the incoming data
     uint8_t *dtmp  = (uint8_t *) malloc(BUF_SIZE);
@@ -3005,6 +2890,11 @@ int mqtt_ble_data_parser_cb(uint8_t *data)
                 {
                     // printf("查询主控盒参数\n");
                     MFP_Cmd(data[4],1);
+                }else if(data[4] == 0x04) // 闹钟指令控制
+                {
+                    printf("闹钟指令控制 \r\n");
+                    /* APP 下发闹钟指令后，120s 内禁止新的打鼾干预触发（不打断当前干预） */
+                    snore_blocked_until_s = (uint32_t)(xTaskGetTickCount() / pdMS_TO_TICKS(1000)) + 120;
                 }
                 break;
 
@@ -3077,9 +2967,7 @@ int mqtt_ble_data_parser_cb(uint8_t *data)
             default:
                 return -2;
         }
-    }else if(data[0] == 0xBB){
-
-    } 
+    }
     // check_stack_space();
     return 0;
 }

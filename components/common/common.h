@@ -29,7 +29,7 @@
 #define DEVEICE_ID                                  "KSPSBED00001057"
 #define PRODUCT_KEY                                 "ixvaCaIfGla"
 #define DEVEICE_SECRET                              "fd3e5207b753226032a602f2b7c44804"
-#define INIT_VERSION                                "BC_ESP_2025_2_2_3"//"PS_20230906_0_0_1"        old :BC_ESP_2023_0_1_5  news: BC_ESP_2025_1_0_1
+#define INIT_VERSION                                "BC_ESP_2026_2_2_4"//"PS_20230906_0_0_1"        old :BC_ESP_2023_0_1_5  news: BC_ESP_2025_1_0_1
 // #define CINFIG_VERSION                              "settingConfig_001" 
 
 #define UART1_TXD                                   (22)
