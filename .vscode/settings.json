@@ -92,6 +92,6 @@
   "idf.portWin": "COM18",
   "idf.espIdfPathWin": "d:\\espidf\\v4.4.8\\esp-idf",
   "idf.toolsPathWin": "d:\\espidf\\tools",
-  "idf.pythonInstallPath": "d:\\espidf\\tools\\tools\\idf-python\\3.8.7\\python.exe",
+  "idf.pythonInstallPath": "c:\\espidf\\tools_55\\tools\\idf-python\\3.11.2\\python.exe",
   "idf.currentSetup": "D:/Espressif/frameworks/esp-idf-v4.4.8/"
 }
