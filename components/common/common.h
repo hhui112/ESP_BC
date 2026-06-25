@@ -20,16 +20,19 @@
 /*-----------传感器类型------------------------*/
 #define BLE_TEST                                   0
 #define ALIYUN_BURN                                1
+/* ALIYUN_BURN=1：三元组来自 flash「storage」分区（产测烧录），与下方 PRODUCT_KEY 宏无关，易导致 MQTT「bad username or password」。
+ * 迁移涂鸦/更正 ProductKey 期间改为 0，使用下方宏；量产烧录正确三元组到 storage 后再改回 1。 */
 
 #define DATA_UP                                     1
 #define OTA_ON_OFF                                  1
 
-#define MY_WIFI_SSID                                "7788"//"keeson-office"//"DS" // xmhdesktop
-#define MY_WIFI_PASSWD                              "77885522"//"ksn88888"//"ds654321"  // 87632154
+#define MY_WIFI_SSID                                "keeson-office"//"keeson-office"//"DS" // xmhdesktop
+#define MY_WIFI_PASSWD                              "Smartbed2025@"//"ksn88888"//"ds654321"  // 87632154
 #define DEVEICE_ID                                  "KSPSBED00001057"
+/* 涂鸦 IoT（阿里云版）ProductKey，与控制台 ProductID 一致 */
 #define PRODUCT_KEY                                 "ixvaCaIfGla"
-#define DEVEICE_SECRET                              "fd3e5207b753226032a602f2b7c44804"
-#define INIT_VERSION                                "BC_ESP_2026_2_2_4"//"PS_20230906_0_0_1"        old :BC_ESP_2023_0_1_5  news: BC_ESP_2025_1_0_1
+#define DEVEICE_SECRET                              "a1b790f9378c139682c11dbef51de948"
+#define INIT_VERSION                                "BC_ESP_2026_2_3_4"//"PS_20230906_0_0_1"        old :BC_ESP_2023_0_1_5  news: BC_ESP_2025_1_0_1
 // #define CINFIG_VERSION                              "settingConfig_001" 
 
 #define UART1_TXD                                   (22)
@@ -192,7 +195,7 @@ typedef struct
     char running_version[32];
     char upgrade_version[32];
     bool flag;
-    char url[100];
+    char url[1024];
 }ota_info_t;
 
 typedef struct

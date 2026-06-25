@@ -25,6 +25,7 @@
 #include "ble_server.h"
 #include "common.h"
 
+
 extern device_info_t *device_info;
 
 #define GATTS_TABLE_TAG "GATTS_TABLE_DEMO"
@@ -455,4 +456,5 @@ void initialize_ble_server(void)
     {
         ESP_LOGE(GATTS_TABLE_TAG, "set local  MTU failed, error code = %x", local_mtu_ret);
     }
+
 }

@@ -38,7 +38,7 @@
 #define ENABLE_MFP_DETAIL_LOG   0   // 1=启用MFP详细日志  0=仅错误日志（量产）
 // ======================================================
 
-#define UP_RATIO_60S    6   // 60s上报一次需改为12
+#define UP_RATIO_60S    12   // 60s上报一次需改为12
 
 static const char *TAG = "control";
 extern device_info_t *device_info;
@@ -87,6 +87,12 @@ static uint32_t snore_blocked_until_s = 0;                //闹钟指令后 120s
 
 #define BUF_SIZE (512)
 
+/* SU2(UART1)：0=关 1=每 chunk 打印 ring 前后长度 2=另打本 chunk 十六进制(最多 SU2_UART_HEX_DUMP_MAX) */
+#define DEBUG_SU2_UART_RX_LOG   1
+#define SU2_UART_HEX_DUMP_MAX   64
+/* MFP(UART2) 事件接收：1=每次 UART_DATA 打印 read 长度（流量大，默认 0） */
+#define DEBUG_MFP_UART_RX_LOG   0
+
 static QueueHandle_t uart2_queue;
 
 union SyncCommunicationData_t g_Sync_TX;
@@ -119,7 +125,7 @@ static void report_cli_up(void)   //指令下发
     //     break;
     case 2:   //睡眠报告上传指令
         sprintf(get_report_cmd2, "report %d",report_cli_data[1]);
-        printf("get_report_cmd2 %s",get_report_cmd2);
+        printf("get_report_cmd2 %s\n", get_report_cmd2);
         // sleep_up_flag = 1;
         memset(json_report_name, 0, 32);
         strcpy(json_report_name,cli_report_name);
@@ -872,7 +878,7 @@ void single_cmd_parse(uint8_t *value, uint16_t len, uint8_t type)
                                                                                                         m_sleep_cycle_pb_msg_de->Ave_SA_time,
                                                                                                         m_sleep_cycle_pb_msg_de->Longest_SA_time
                                                                                                         );
-            printf("%s\n",send_json_value);
+           //  printf("%s\n",send_json_value);
           
             if(get_mqtt_status())
             {
@@ -989,14 +995,13 @@ void single_cmd_parse(uint8_t *value, uint16_t len, uint8_t type)
         ret = qs_pb_sensor_5sec_info_decode((char *)value, len, m_5s_pb_msg_de);
         if(ret == QS_SUCCESS)
         {
-                    printf("device_id = %s\n",m_5s_pb_msg_de->device_id);
-                    printf("timestamp = %d\n",m_5s_pb_msg_de->timestamp);
-                    printf("state--// ");
-                    for (uint8_t i = 0; i < 12; i++)
-                    {
-                        printf("%x ", m_5s_pb_msg_de->status[i]);
-                    }
-                    printf("\n\r");
+            /*
+            for (uint8_t i = 0; i < 12; i++)
+            {
+                printf("%x ", m_5s_pb_msg_de->status[i]);
+            }
+            printf("\n\r");
+            */
             if(get_5s_flag == false)
             {
                 get_5s_flag = true;
@@ -1095,13 +1100,13 @@ void muilt_cmd_parse(uint8_t *value, size_t len)
 
         printf("%d frams is parse ...\n",i);
         memset(sing_cmd_value, 0, 1024 * sizeof(uint8_t));
-        memcpy(sing_cmd_value, &value[value_offset], value[value_offset + 3] + 8);//memcpy(sing_cmd_value, value, value[3] + 8);
-        // for (uint16_t j = 0; j < value[3] + 8; j++)
+        memcpy(sing_cmd_value, &value[value_offset], value[value_offset + 3] + 8);
+        // for (uint16_t j = 0; j < value[3] + 9; j++)
         // {
         //     printf("%x ", sing_cmd_value[j]);
         // }
         printf("\n\r");
-        value_offset = value_offset + value[value_offset + 3] + 8;//len = len - value[3] -8;
+        value_offset = value_offset + value[value_offset + 3] + 8;
         //memcpy(value, value + value[3] + 8, len);
         if((sing_cmd_value[2] & 0xf0) == 0)   //单帧
         {
@@ -1409,14 +1414,14 @@ int set_bc(uint32_t time_stamp, char *value, uint8_t switch_return, uint8_t swit
     cmd[0] = 0xAA;
     cmd[1] = 0x55;
     cmd[2] = 0x01;
-    cmd[3] = pb_len - 1; 
+    cmd[3] = (uint8_t)(pb_len - 1);
     cmd[4] = 0x34;
 	cmd[5] = 0x33;
 	cmd[6] = 0x04;
     memcpy(cmd + 7, pb, pb_len-2);
 	uint16_t crc16 = crc16_compute((uint8_t const*)cmd, pb_len-2+7);
-	cmd[pb_len-2+7] = crc16 >> 8;
-	cmd[pb_len-2+8] = crc16;
+	cmd[pb_len-2+7] = (uint8_t)(crc16 & 0xFF);
+	cmd[pb_len-2+8] = (uint8_t)((crc16 >> 8) & 0xFF);
 	// for (uint8_t i = 0; i < pb_len-2+9; i++)
 	// {
 	// 	printf("%x ", cmd[i]);
@@ -1440,17 +1445,20 @@ int set_bc(uint32_t time_stamp, char *value, uint8_t switch_return, uint8_t swit
             if(strstr(value, "list"))
             {
                 char *report = report_muilt_cmd_parse(uart_recbuff, rxBytes);  //返回睡眠报告列表
-                printf("in set bc report:\n%s\n",report);
-                if(return_value!=NULL)
+                printf("in set bc report:\n%s\n", (report != NULL) ? report : "(null)");
+                if(return_value!=NULL && report != NULL)
                 {
                     strcpy(return_value, (char *)report);
                 }
-                free(report);
+                if (report != NULL)
+                {
+                    free(report);
+                }
             }
             else
             {
                 memset(m_pb_msg_de, 0, sizeof(qs_pb_msg_state_raw_data));
-                qs_pb_state_raw_data_decode((char *)uart_recbuff+7, sizeof(uart_recbuff)-9, m_pb_msg_de);
+                qs_pb_state_raw_data_decode((char *)uart_recbuff+7, uart_recbuff[3] - 1, m_pb_msg_de);// qs_pb_state_raw_data_decode((char *)uart_recbuff+7, sizeof(uart_recbuff)-9, m_pb_msg_de);
                 if(return_value!=NULL)
                 {
                     strcpy(return_value, (char *)m_pb_msg_de->data);
@@ -1496,8 +1504,8 @@ int sensor_ota_bc(char *value)
 	cmd[5] = 0x43;
     memcpy(cmd + 6, value, size);
     uint16_t crc16 = crc16_compute((uint8_t const*)cmd, size+6);
-	cmd[size+6] = crc16 >> 8;
-	cmd[size+7] = crc16;
+	cmd[size+6] = (uint8_t)(crc16 & 0xFF);
+	cmd[size+7] = (uint8_t)((crc16 >> 8) & 0xFF);
 
     // pause_uart_task = false;
     // vTaskDelay(50 / portTICK_PERIOD_MS);
@@ -1594,12 +1602,6 @@ int sensor_ota_bc(char *value)
     // pause_uart_task = true;
 
     return 0;
-}
-
-//utc 更新完毕 回调
-void sntp_update_flag(struct timeval* tv) 
-{
-    device_info->utc.flag = true;
 }
 
 uint32_t find_report_time(char *report_name, uint8_t len)
@@ -1855,36 +1857,21 @@ void utc_get_task(void *pv)
     {
         utc_first_flag=0;
 
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
-        //等待WIFI连接
-        while(!get_wifi_status())
-        {
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-        }
-        //时间更正
-        sntp_set_time_sync_notification_cb(&sntp_update_flag);
-        sntp_setoperatingmode(SNTP_OPMODE_POLL);
-        sntp_setservername(0, "ntp.aliyun.com");
-        sntp_init();
-        setenv("TZ", "CST-8", 1);
-        tzset();
-        //等待utc更新完毕
-        while(device_info->utc.flag == false)
-        {
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        /* SNTP/MQTT 已在 use_wifi GOT_IP → start_sntp_once → on_sntp_synced 中完成 */
+        while (device_info->utc.flag == false) {
+            vTaskDelay(200 / portTICK_PERIOD_MS);
         }
         if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
             printf("[UTC] SNTP 同步失败 or 未完成\n");
             vTaskDelay(5000 / portTICK_PERIOD_MS);
-            esp_restart();     // 重启设备    
+            esp_restart();
         } else {
             printf("[UTC] SNTP 同步成功\n");
         }
 
-        //更新博创设备时间
-        while(devic_id_flag == 0)      //等待device_id更新赋值(从串口上接收到设备ID/通信没问题)
-        {
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        /* 等待博创 device_id（串口通信正常） */
+        while (devic_id_flag == 0) {
+            vTaskDelay(200 / portTICK_PERIOD_MS);
         }
         printf("[UTC] devic_id_flag 同步成功\n");
 
@@ -1972,7 +1959,7 @@ void real_data_up_task(void *pv)
         vTaskDelete(NULL);
         return;
     }
-    static uint8_t cnt_5s = UP_RATIO_60S;
+    static uint8_t cnt_5s = 0;
     static int32_t ap_min_max = 0;
     static int32_t ap_min_min = 0;
     int32_t ap_min_temp = 0;
@@ -1994,9 +1981,11 @@ void real_data_up_task(void *pv)
         else
         {
             memset(temp, 0, 512);
-            sprintf((char *)temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":1,\"data\":{\"heart\":%d,\"breath\":%d,\"status\":[%d,%d,%d,%d,%d]}}",
+            /* ts：ESP 上报时刻；data.sensor_ts：传感器侧该条 5s 包时间戳，供云端对齐业务时间 */
+            sprintf((char *)temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":1,\"data\":{\"sensor_ts\":%d,\"heart\":%d,\"breath\":%d,\"status\":[%d,%d,%d,%d,%d]}}",
                                                                                                             device_info->id,
                                                                                                             device_info->utc.time_stamp,
+                                                                                                            (int)user_5s_sensor_info->timestamp,
                                                                                                             user_5s_sensor_info->heartbeat,
                                                                                                             user_5s_sensor_info->breathRate,
                                                                                                             user_5s_sensor_info->status[0],
@@ -2004,6 +1993,7 @@ void real_data_up_task(void *pv)
                                                                                                             user_5s_sensor_info->status[2],
                                                                                                             user_5s_sensor_info->status[3],
                                                                                                             user_5s_sensor_info->status[4]);
+           // ESP_LOGI(TAG, "mqtt 5s payload(len=%u): %s", (unsigned)strlen((char *)temp), (char *)temp);
 //睡眠报告上传和传感器升级时时wifi不上传实时数据
             if(get_mqtt_status() && device_info->data_up_switch && sleep_up_flag == 0 && sensor_upgrade_flag == 0)
             {
@@ -2023,10 +2013,13 @@ void real_data_up_task(void *pv)
                                             strlen((char *)temp), temp, false);
             }
 
-            if(cnt_5s >= UP_RATIO_60S)
+            /* 每执行一次本任务 ≈ 一次 5s 上报节拍；累计 UP_RATIO_60S 次后再发 60s（约 12×5s≈60s）。
+             * 原先 cnt_5s 初值为 UP_RATIO_60S 且 cnt_5s=0 被注释，导致 cnt_5s>=12 恒成立，60s 与 5s 同频率误发。 */
+            cnt_5s++;
+            if (cnt_5s >= UP_RATIO_60S)
             {
-                cnt_5s = 0;
-            
+                
+            /*
                 if((ap_min_min>user_60s_sensor_info->Mmin)||(ap_min_min==0))
                 {
                     ap_min_min = user_60s_sensor_info->Mmin;
@@ -2045,11 +2038,13 @@ void real_data_up_task(void *pv)
                         //set_bc(device_info->utc.time_stamp, "reboot", 1, 0, NULL, 200);  
                     }
                 }  
-                         
+             */            
                 memset(temp, 0, 512);
-                sprintf((char *)temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":2,\"data\":{\"bed\":%d,\"heart\":%d,\"breath\":%d,\"Mmin\":%d,\"Mmean\":%d,\"NSD\":%d,\"NPD\":%d,\"SBP\":%d,\"DBP\":%d}}",
+                /* ts：ESP 上报时刻；data.sensor_ts：传感器侧该条 60s 包时间戳 */
+                sprintf((char *)temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":2,\"data\":{\"sensor_ts\":%d,\"bed\":%d,\"heart\":%d,\"breath\":%d,\"Mmin\":%d,\"Mmean\":%d,\"NSD\":%d,\"NPD\":%d,\"SBP\":%d,\"DBP\":%d}}",
                                                                                                                 device_info->id,
                                                                                                                 device_info->utc.time_stamp,
+                                                                                                                (int)user_60s_sensor_info->timestamp,
                                                                                                                 user_60s_sensor_info->on_off_bed,
                                                                                                                 user_60s_sensor_info->heartbeat,
                                                                                                                 user_60s_sensor_info->breath_rate,
@@ -2059,6 +2054,7 @@ void real_data_up_task(void *pv)
                                                                                                                 user_60s_sensor_info->Npd,
                                                                                                                 user_60s_sensor_info->SBP,
                                                                                                                 user_60s_sensor_info->DBP);
+               // ESP_LOGI(TAG, "mqtt 60s payload(len=%u): %s", (unsigned)strlen((char *)temp), (char *)temp);
 
             if(get_mqtt_status() && device_info->data_up_switch && sleep_up_flag == 0 && sensor_upgrade_flag == 0)
             {
@@ -2078,8 +2074,8 @@ void real_data_up_task(void *pv)
                                                 device_info->ble->handle,
                                                 strlen((char *)temp), temp, false);
                 }
+                cnt_5s = 0;
             }
-            cnt_5s++;
         
         }      
         //vTaskDelay(5000 / portTICK_PERIOD_MS);
@@ -2721,7 +2717,9 @@ static void MFP_DataReceive_task(void *arg)
             {
             //Event of UART receving data
             case UART_DATA:
-                // printf("size=%d \r", event.size);
+#if DEBUG_MFP_UART_RX_LOG
+                printf("MFP_U2 UART_DATA read_bytes=%d (buf_max=%d)\n", (int)event.size, BUF_SIZE);
+#endif
                 uart_read_bytes(ECHO_UART_PORT_NUM, dtmp, event.size, portMAX_DELAY);
                 mfp_datareceive_handler(dtmp,event.size);   // 一次性收完一帧
                // ESP_LOGI(TAG, "[DATA EVT]:");
