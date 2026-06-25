@@ -28,31 +28,40 @@ extern device_info_t *device_info;
 extern esp_mqtt_client_handle_t client;
 extern char ota_infor_publish_topic[64];
 
+static bool s_mqtt_paused_for_ota = false;
+
+/* OTA HTTPS 下载前暂停 MQTT TLS，释放内部 RAM 给第二路 mbedTLS */
+static void ota_mqtt_pause_for_download(void)
+{
+    if (client == NULL) {
+        return;
+    }
+    esp_mqtt_client_stop(client);
+    set_mqtt_status(0);
+    s_mqtt_paused_for_ota = true;
+    vTaskDelay(pdMS_TO_TICKS(300));
+}
+
+static void ota_mqtt_resume_after_download(void)
+{
+    if (!s_mqtt_paused_for_ota || client == NULL) {
+        return;
+    }
+    s_mqtt_paused_for_ota = false;
+    if (!get_wifi_status()) {
+        return;
+    }
+    esp_err_t err = esp_mqtt_client_start(client);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "resume MQTT failed: %s", esp_err_to_name(err));
+    }
+}
+
 //http操作函数
 esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 {
-    switch (evt->event_id) {
-    case HTTP_EVENT_ERROR:
-        ESP_LOGI(TAG, "HTTP_EVENT_ERROR");
-        break;
-    case HTTP_EVENT_ON_CONNECTED:
-        ESP_LOGI(TAG, "HTTP_EVENT_ON_CONNECTED");
-        break;
-    case HTTP_EVENT_HEADER_SENT:
-        ESP_LOGI(TAG, "HTTP_EVENT_HEADER_SENT");
-        break;
-    case HTTP_EVENT_ON_HEADER:
-        ESP_LOGI(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value);
-        break;
-    case HTTP_EVENT_ON_DATA:
-        ESP_LOGI(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
-        break;
-    case HTTP_EVENT_ON_FINISH:
-        ESP_LOGI(TAG, "HTTP_EVENT_ON_FINISH");
-        break;
-    case HTTP_EVENT_DISCONNECTED:
-        ESP_LOGI(TAG, "HTTP_EVENT_DISCONNECTED");
-        break;
+    if (evt->event_id == HTTP_EVENT_ERROR) {
+        ESP_LOGE(TAG, "HTTPS OTA HTTP error");
     }
     return ESP_OK;
 }
@@ -61,18 +70,12 @@ esp_err_t device_firmware_version_check(void)
 {
     char running_version[4] = {0};
     char upgrade_version[4] = {0};
-    ESP_LOGI(TAG, "Running version: %s\nupgrade version: %s\n", device_info->ota.running_version,
-             device_info->ota.upgrade_version);
     running_version[0] = device_info->ota.running_version[12];
     running_version[1] = device_info->ota.running_version[14];
     running_version[2] = device_info->ota.running_version[16];
-    printf("%c %c %c\n", running_version[0], running_version[1], running_version[2]);
     upgrade_version[0] = device_info->ota.upgrade_version[12];
     upgrade_version[1] = device_info->ota.upgrade_version[14];
     upgrade_version[2] = device_info->ota.upgrade_version[16];
-    printf("%c %c %c\n", upgrade_version[0], upgrade_version[1], upgrade_version[2]);
-    printf("%s %s\n", running_version, upgrade_version);
-    printf("%d %d\n", atoi(running_version), atoi(upgrade_version));
     if (atoi(running_version) == atoi(upgrade_version))
     {
         ESP_LOGW(TAG, "Current running version is the same as a new. We will not continue the update.");
@@ -84,7 +87,6 @@ void upgrade_nvs_infor(void)
 {
     char ota_version[128] = {0};
     sprintf(ota_version,"{\"id\": \"1\",\"params\": {\"version\": \"%s\",\"module\":\"default\"}}",device_info->ota.upgrade_version);
-    printf("%s\n",ota_version);
     esp_mqtt_client_publish(client, ota_infor_publish_topic, (char *)ota_version, strlen((char *)ota_version), 1, 0);
 
     nvs_handle ota_handlel;
@@ -122,9 +124,13 @@ void upgrade_nvs_infor(void)
 
 void advanced_ota_example_task(void *pvParameter)
 {
-    ESP_LOGI(TAG, "Starting Advanced OTA example");
-    printf("url: %s\n", device_info->ota.url);
     esp_err_t ota_finish_err = ESP_OK;
+    esp_https_ota_handle_t https_ota_handle = NULL;
+
+    ESP_LOGI(TAG, "OTA start: %s -> %s", device_info->ota.running_version,
+             device_info->ota.upgrade_version);
+    ota_mqtt_pause_for_download();
+
     esp_http_client_config_t config = {
         .url = device_info->ota.url,
         .event_handler = _http_event_handler,
@@ -137,13 +143,14 @@ void advanced_ota_example_task(void *pvParameter)
         .http_config = &config,
     };
 
-    esp_https_ota_handle_t https_ota_handle = NULL;
     esp_err_t err = esp_https_ota_begin(&ota_config, &https_ota_handle);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed");
+        ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed: %s", esp_err_to_name(err));
         set_ota_now_flag(0);
+        ota_mqtt_resume_after_download();
         vTaskDelete(NULL);
+        return;
     }
 
     esp_app_desc_t app_desc;
@@ -190,41 +197,28 @@ void advanced_ota_example_task(void *pvParameter)
             if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED) {
                 ESP_LOGE(TAG, "Image validation failed, image is corrupted");
             }
-            ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed 0x%d", ota_finish_err);
+            ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed 0x%x", ota_finish_err);
+            ota_mqtt_resume_after_download();
             vTaskDelete(NULL);
         }
     }
 ota_end:
     set_ota_now_flag(0);
-    esp_https_ota_abort(https_ota_handle);
+    if (https_ota_handle != NULL) {
+        esp_https_ota_abort(https_ota_handle);
+    }
+    ota_mqtt_resume_after_download();
     ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed");
     vTaskDelete(NULL);
-/*之前版本
-ota_end:
-    ota_finish_err = esp_https_ota_finish(https_ota_handle);
-    set_ota_now_flag(0);
-    if ((err == ESP_OK) && (ota_finish_err == ESP_OK))
-    {
-        upgrade_nvs_infor();
-        ESP_LOGI(TAG, "ESP_HTTPS_OTA upgrade successful. Rebooting ...");
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        esp_restart();
-    }
-    else
-    {
-        if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED)
-        {
-            ESP_LOGE(TAG, "Image validation failed, image is corrupted");
-        }
-        ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed %d", ota_finish_err);
-        vTaskDelete(NULL);
-    }
-*/
 }
 
 void ota_start(void)
 {
+    if (get_ota_now_flag()) {
+        ESP_LOGW(TAG, "OTA already in progress, ignore duplicate upgrade");
+        return;
+    }
     set_ota_now_flag(1);
-    xTaskCreate(advanced_ota_example_task, "advanced_ota_example_task", 1024*4,NULL, 1, NULL);
+    xTaskCreate(advanced_ota_example_task, "advanced_ota_example_task", 1024 * 8, NULL, 1, NULL);
 }
 
