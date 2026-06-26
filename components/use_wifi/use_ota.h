@@ -12,6 +12,23 @@
 void advanced_ota_example_task(void *pvParameter);
 void ota_start(void);
 
+/** 切换 boot 分区：0=ota_0，1=ota_1，-1=当前非运行槽（OTA 回退推荐） */
+#define OTA_ROLLBACK_SLOT_OTHER  (-1)
+
+/** otaRollback 应答：回退前运行槽 / 回退目标槽及镜像版本 */
+typedef struct {
+    char running_part[16];
+    char running_ver[32];
+    char target_part[16];
+    char target_ver[32];
+} ota_rollback_result_t;
+
+esp_err_t ota_rollback_to_partition(int slot, ota_rollback_result_t *result,
+                                    char *out_msg, size_t out_len);
+void ota_rollback_restart(void);
+/** 上电打印当前运行分区、下次启动分区及镜像版本 */
+void ota_log_boot_partition_info(void);
+
 #define ca_root_cert "\
 -----BEGIN CERTIFICATE-----\n\
 MIIDdTCCAl2gAwIBAgILBAAAAAABFUtaw5QwDQYJKoZIhvcNAQEFBQAwVzELMAkG\n\

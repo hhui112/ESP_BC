@@ -1994,9 +1994,11 @@ void real_data_up_task(void *pv)
         else
         {
             memset(temp, 0, 512);
-            sprintf((char *)temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":1,\"data\":{\"heart\":%d,\"breath\":%d,\"status\":[%d,%d,%d,%d,%d]}}",
+            /* ts：ESP 上报时刻；data.sensor_ts：传感器侧该条 5s 包时间戳，供云端对齐业务时间 */
+            sprintf((char *)temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":1,\"data\":{\"sensor_ts\":%d,\"heart\":%d,\"breath\":%d,\"status\":[%d,%d,%d,%d,%d]}}",
                                                                                                             device_info->id,
                                                                                                             device_info->utc.time_stamp,
+                                                                                                            (int)user_5s_sensor_info->timestamp,
                                                                                                             user_5s_sensor_info->heartbeat,
                                                                                                             user_5s_sensor_info->breathRate,
                                                                                                             user_5s_sensor_info->status[0],
@@ -2047,9 +2049,11 @@ void real_data_up_task(void *pv)
                 }  
                          
                 memset(temp, 0, 512);
-                sprintf((char *)temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":2,\"data\":{\"bed\":%d,\"heart\":%d,\"breath\":%d,\"Mmin\":%d,\"Mmean\":%d,\"NSD\":%d,\"NPD\":%d,\"SBP\":%d,\"DBP\":%d}}",
+                /* ts：ESP 上报时刻；data.sensor_ts：传感器侧该条 60s 包时间戳 */
+                sprintf((char *)temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":2,\"data\":{\"sensor_ts\":%d,\"bed\":%d,\"heart\":%d,\"breath\":%d,\"Mmin\":%d,\"Mmean\":%d,\"NSD\":%d,\"NPD\":%d,\"SBP\":%d,\"DBP\":%d}}",
                                                                                                                 device_info->id,
                                                                                                                 device_info->utc.time_stamp,
+                                                                                                                (int)user_60s_sensor_info->timestamp,
                                                                                                                 user_60s_sensor_info->on_off_bed,
                                                                                                                 user_60s_sensor_info->heartbeat,
                                                                                                                 user_60s_sensor_info->breath_rate,

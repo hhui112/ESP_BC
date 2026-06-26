@@ -30,12 +30,13 @@ void app_main(void)
   //初始化 NVS
   vTaskDelay(500 / portTICK_PERIOD_MS);
 	esp_err_t ret = nvs_flash_init();
-	if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
-	{
-		ESP_ERROR_CHECK(nvs_flash_erase());
-		ret = nvs_flash_init();
-	}
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+  {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ret = nvs_flash_init();
+  }
   device_init();
+  ota_log_boot_partition_info();
 
   // config_store();               //默认配置 需单独配置
   // read_config();                //读取用户配置

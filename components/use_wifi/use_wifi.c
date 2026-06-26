@@ -451,6 +451,41 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             printf("%s\n",temp);
                             esp_mqtt_client_publish(client, user_cli_data_publish_topic, (char *)temp, strlen((char *)temp), 0, 0);
                        }
+                       else if (secondItem && strstr(secondItem->valuestring, "otaRollback"))
+                       {
+                            char rollback_back[64] = {0};
+                            ota_rollback_result_t rb_result = {0};
+                            int slot = OTA_ROLLBACK_SLOT_OTHER;
+                            esp_err_t rerr;
+
+                            if (strstr(secondItem->valuestring, "otaRollback0")) {
+                                slot = 0;
+                            } else if (strstr(secondItem->valuestring, "otaRollback1")) {
+                                slot = 1;
+                            }
+
+                            rerr = ota_rollback_to_partition(slot, &rb_result,
+                                    rollback_back, sizeof(rollback_back));
+                            sprintf(temp,
+                                    "{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\","
+                                    "\"running\":\"%s\",\"running_ver\":\"%s\","
+                                    "\"target\":\"%s\",\"target_ver\":\"%s\","
+                                    "\"back\":\"%s\"}",
+                                    device_info->id,
+                                    device_info->utc.time_stamp,
+                                    secondItem->valuestring,
+                                    rb_result.running_part,
+                                    rb_result.running_ver,
+                                    rb_result.target_part,
+                                    rb_result.target_ver,
+                                    rollback_back);
+                            printf("%s\n", temp);
+                            esp_mqtt_client_publish(client, user_cli_data_publish_topic,
+                                    (char *)temp, strlen((char *)temp), 0, 0);
+                            if (rerr == ESP_OK) {
+                                ota_rollback_restart();
+                            }
+                       }
                        
                     }else if(secondItem && strstr(secondItem->valuestring, "mcCli"))
                     {
