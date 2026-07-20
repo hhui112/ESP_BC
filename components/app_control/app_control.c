@@ -2136,7 +2136,7 @@ void test_task(void *pv)
         char return_value[1024] = {0};
         set_bc(device_info->utc.time_stamp, "report", 1, 0, return_value, 1000);
         // printf("%s\n",return_value);
-        sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"%s\"}", 
+        sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":\"%s\"}", 
             device_info->id,
             device_info->utc.time_stamp,
             "list",
@@ -2157,7 +2157,7 @@ void test_task1(void)
         char return_value[1024] = {0};
         set_bc(device_info->utc.time_stamp, "list", 1, 0, return_value, 1000);
         // printf("%s\n",return_value);
-        sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"%s\"}", 
+        sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":\"%s\"}", 
             device_info->id,
             device_info->utc.time_stamp,
             "list",

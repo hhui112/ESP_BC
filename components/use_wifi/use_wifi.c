@@ -99,6 +99,47 @@ extern char last_saved_ssid[32];
 extern char last_saved_passwd[64];
 
 static const char *TAG = "wifi station";
+
+/* 将传感器 CLI 回包转义为 JSON 字符串安全内容（\r\n → \n，" \ 转义） */
+static void json_escape_back(char *dst, size_t dst_size, const char *src)
+{
+    size_t j = 0;
+
+    if (dst == NULL || dst_size == 0) {
+        return;
+    }
+    dst[0] = '\0';
+    if (src == NULL) {
+        return;
+    }
+
+    for (size_t i = 0; src[i] != '\0' && j < dst_size - 1; i++) {
+        if (src[i] == '\r' && src[i + 1] == '\n') {
+            if (j + 2 >= dst_size) {
+                break;
+            }
+            dst[j++] = '\\';
+            dst[j++] = 'n';
+            i++;
+        } else if (src[i] == '\n') {
+            if (j + 2 >= dst_size) {
+                break;
+            }
+            dst[j++] = '\\';
+            dst[j++] = 'n';
+        } else if (src[i] == '"' || src[i] == '\\') {
+            if (j + 2 >= dst_size) {
+                break;
+            }
+            dst[j++] = '\\';
+            dst[j++] = src[i];
+        } else {
+            dst[j++] = src[i];
+        }
+    }
+    dst[j] = '\0';
+}
+
 int s_retry_num = 0;
 static int s_mqtt_retry_num = 0;
 static uint8_t s_sntp_started = 0;
@@ -302,7 +343,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     cJSON *firstItem;
     cJSON *secondItem;
     cJSON *thirdItem;
-    char temp[2048] = {0};
+    char temp[4096] = {0};
     uint8_t cmd_bin[64] = {0}; // 存放MQTT_key数据
     // 通过事件ID来分别处理对应的事件
     switch (event->event_id)
@@ -460,7 +501,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     {
                         if(get_devic_id_flag() == 0)
                         {
-                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"no sensor id,wait two min again\"}", 
+                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":\"no sensor id,wait two min again\"}", 
                                 device_info->id,
                                 device_info->utc.time_stamp,
                                 secondItem->valuestring);
@@ -473,7 +514,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             {
                                 if(get_sleep_up_flag() == 1)
                                 {
-                                    sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"report uping now,wait two min again\"}", 
+                                    sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":\"report uping now,wait two min again\"}", 
                                     device_info->id,
                                     device_info->utc.time_stamp,
                                     secondItem->valuestring);
@@ -503,12 +544,14 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             else if (secondItem&&strstr(secondItem->valuestring, "reboot"))
                             {
                                 char return_value[1024] = {0};
+                                char escaped_back[1024] = {0};
                                 set_bc(device_info->utc.time_stamp, secondItem->valuestring, 1, 0, return_value, 1000);
-                                sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"%s\"}", 
+                                json_escape_back(escaped_back, sizeof(escaped_back), return_value);
+                                snprintf(temp, sizeof(temp), "{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":\"%s\"}", 
                                     device_info->id,
                                     device_info->utc.time_stamp,
                                     secondItem->valuestring,
-                                    return_value);
+                                    escaped_back);
                                 printf("%s\n",temp);
                                 esp_mqtt_client_publish(client, user_cli_data_publish_topic, (char *)temp, strlen((char *)temp), 0, 0);
                                 if(strncmp(return_value, "ok",2) == 0)
@@ -519,12 +562,14 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             else if (secondItem&&strstr(secondItem->valuestring, "set mode 0"))     // xinzeng：如果是set mode 0强制生成报告，则将报告上传到阿里云
                             {
                                 char return_value[1024] = {0};
+                                char escaped_back[1024] = {0};
                                 set_bc(device_info->utc.time_stamp, secondItem->valuestring, 1, 0, return_value, 1000);
-                                sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"%s\"}", 
+                                json_escape_back(escaped_back, sizeof(escaped_back), return_value);
+                                snprintf(temp, sizeof(temp), "{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":\"%s\"}", 
                                     device_info->id,
                                     device_info->utc.time_stamp,
                                     secondItem->valuestring,
-                                    return_value);
+                                    escaped_back);
                                 printf("%s\n",temp);
                                 esp_mqtt_client_publish(client, user_cli_data_publish_topic, (char *)temp, strlen((char *)temp), 0, 0);
                                 // printf("什么意思？\n");
@@ -537,17 +582,19 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             else
                             {
                                 char return_value[1024] = {0};
+                                char escaped_back[1024] = {0};
                                 int ddss;
                                 int64_t start_time = esp_timer_get_time(); 
                                 set_bc(device_info->utc.time_stamp, secondItem->valuestring, 1, 0, return_value, 1000);
                                 int64_t end_time = esp_timer_get_time();
                                 printf("set bc time = %lld ms\n", (end_time - start_time)/1000);
                                 // printf("%s\n",return_value);
-                                sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"%s\"}", 
+                                json_escape_back(escaped_back, sizeof(escaped_back), return_value);
+                                snprintf(temp, sizeof(temp), "{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":\"%s\"}", 
                                     device_info->id,
                                     device_info->utc.time_stamp,
                                     secondItem->valuestring,
-                                    return_value);
+                                    escaped_back);
                                 printf("%s\n",temp);
                                 ddss=esp_mqtt_client_publish(client, user_cli_data_publish_topic, (char *)temp, strlen((char *)temp), 0, 0);
                                 printf("ddss=%d\n",ddss);
@@ -567,7 +614,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             ESP_ERROR_CHECK(nvs_set_u8(nvs_config_handler, "dataUpSwitch", device_info->data_up_switch));
                             ESP_ERROR_CHECK(nvs_commit(nvs_config_handler));
                             nvs_close(nvs_config_handler);
-                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":%d}", 
+                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":%d}", 
                                 device_info->id,
                                 device_info->utc.time_stamp,
                                 secondItem->valuestring,
@@ -577,7 +624,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                        }
                        else if (secondItem && strstr(secondItem->valuestring, "currentReport"))
                        {
-                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"%s\"}", 
+                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":\"%s\"}", 
                                 device_info->id,
                                 device_info->utc.time_stamp,
                                 secondItem->valuestring,
@@ -591,7 +638,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         // printf("mqtt mqtt received to: mcCli\n");
                         if(get_devic_id_flag() == 0)
                         {
-                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"no sensor id,wait two min again\"}", 
+                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":\"no sensor id,wait two min again\"}", 
                                 device_info->id,
                                 device_info->utc.time_stamp,
                                 secondItem->valuestring);
@@ -648,7 +695,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     {
                         if(get_devic_id_flag() == 0)
                         {
-                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":%s,\"back\":\"no sensor id,wait two min again\"}", 
+                            sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"cmd\":\"%s\",\"back\":\"no sensor id,wait two min again\"}", 
                                 device_info->id,
                                 device_info->utc.time_stamp,
                                 secondItem->valuestring);
