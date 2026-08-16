@@ -44,6 +44,7 @@
 #define APP_CONTROL_H_
 #include <stdio.h>
 #include <stdlib.h>
+#include "esp_err.h"
 #include "common.h"
 
 void app_control_server(void);
@@ -56,7 +57,10 @@ void set_report_cli(uint8_t data1,uint8_t data2);
 void set_cli_report_name(char* data,char len);
 uint8_t get_devic_id_flag(void);
 void sensor_reboot_config(void);
-int sensor_ota_bc(char *value);
+const char *get_sensor_version(void);
+void set_sensor_version(const char *ver);
+/** 云端下载完成后，经 UART port4 刷写 SU2（set mode 3 → 清盘/分包/结束） */
+esp_err_t sensor_ota_flash(const uint8_t *fw, size_t fw_len);
 int mqtt_send_data(uint32_t time_stamp, char *value, uint8_t switch_return, uint8_t switch_to_aliyun, char *return_value, uint16_t time_ms);
 void check_report_and_up_to_aliyun(void);   //xinzeng
 void set_mode_flag_config(uint8_t data);

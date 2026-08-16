@@ -9,8 +9,19 @@
 #ifndef USE_OTA_H_
 #define USE_OTA_H_
 
+#include <stdbool.h>
+
 void advanced_ota_example_task(void *pvParameter);
 void ota_start(void);
+
+/** 云端 version 是否为传感器固件（SU2/SU3），走下载+port4，不走板端分区 OTA */
+bool ota_upgrade_is_sensor_fw(const char *version);
+/** 启动传感器固件：版本比对 → HTTPS 下载 → port4 串口刷写 */
+void sensor_ota_start(void);
+/** MQTT 连上时上报传感器当前版本（module=sensor） */
+void sensor_ota_report_version_on_mqtt(void);
+/** HTTPS 下载期间 MQTT 已 pause，GOT_IP 勿再 start（避免双 TLS） */
+bool ota_mqtt_is_paused(void);
 
 #define ca_root_cert "\
 -----BEGIN CERTIFICATE-----\n\

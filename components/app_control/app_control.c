@@ -30,6 +30,7 @@
 #include "esp_task_wdt.h"
 #include "driver/gpio.h"
 #include "use_mfp.h"
+#include "use_ota.h"
 
 // ==================== 调试配置开关 ====================
 // 量产时将下面的宏改为 0，调试时改为 1
@@ -69,8 +70,7 @@ uint8_t *mux_sing_cmd_value;
 char json_report_name[32] = {0};
 
 static char device_id[12] = {0},device_version[32] = {0},set_rtc_flag = 0,devic_id_flag = 0;   //bc重启后将两个标志位置零，重新设置addr与rtc 
-static char sleep_up_flag = 0,ota_now_flag = 0,sensor_upgrade_flag = 0;//sleep_up睡眠报告上传进行中、esp32固件升级、博创传感器升级标志
-static uint16_t  sensor_ota_mode_cnt = 0;
+static char sleep_up_flag = 0,ota_now_flag = 0,sensor_upgrade_flag = 0;//sleep_up睡眠报告上传进行中、esp32固件升级、SU2 传感器升级标志
 static uint8_t set_mode_flag = 2;   // xinzeng:set_mode_flag 强制生成报告
 static char report_cli_data[2]={0},cli_report_name[32]={0};
 static snore_parameters_t snore_parameters_demo = {0};    //打鼾干预延时流程参数
@@ -215,135 +215,9 @@ else if (data[0] == 0x22 && data[1]==0x33 && data[2]==0x44)
     s_retry_num = 0;
     ESP_ERROR_CHECK(esp_wifi_start());
 }
-else if (data[0] == 0x33 && data[1]==0x44 && data[2]==0x55)
-{
-    char temp[100] = {0};
-   if(sleep_up_flag == 0 && ota_now_flag == 0)
-                {
-                    
-                    char set_mode[] = "set mode 3";
-                    char return_value[50] = {0};
-                    printf("set mode 3\n");
-                    set_bc(device_info->utc.time_stamp, set_mode, 1, 0, return_value, 100);
-                    vTaskDelay(100 / portTICK_PERIOD_MS);
-
-                    if(strncmp(return_value, "ok",2) == 0)
-                    {
-                        sensor_upgrade_flag = 1;
-                        pause_uart_task = false;
-                        vTaskDelay(1000 / portTICK_PERIOD_MS);
-                        uart_flush(UART_NUM_1);
-                        vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-                        sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":5,\"sdate\":\"Please start upgrading\"}",
-                                                        device_info->id,
-                                                        device_info->utc.time_stamp);
-                        
-                    }
-                    else{
-                        sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":5,\"sdate\":\"set upgrade mode fail\"}",
-                                                        device_info->id,
-                                                        device_info->utc.time_stamp);
-                    } 
-                }
-                else
-                {
-                    sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":5,\"sdate\":\"now now ota or sleepUp,please wait and again\"}",
-                                                        device_info->id,
-                                                        device_info->utc.time_stamp);
-                }
-                
-                printf("sensorUpgrade = %s \n",temp);
-                esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
-                                            device_info->ble->conn_id,
-                                            device_info->ble->handle,
-                                            strlen((char *)temp), (uint8_t *)temp, false);
-            
-}
 
 #endif
 
-    if(sensor_upgrade_flag == 1)
-    {
-        if(data[0 == 0xBB] && data[1] == 0xCC)
-        {
-            if(data[2] == 0x03)     //结束升级
-            {
-                uint8_t temp[50] = {0};
-
-                if(data[3] == 0x01)
-                {
-                    sensor_upgrade_flag = 0;
-                    pause_uart_task = true;
-                    sensor_reboot_config();
-                    sensor_ota_mode_cnt = 0;
-                    printf("sensor up grade finish \n");
-
-                    temp[0] = 0xBB;
-                    temp[1] = 0xCC;
-                    memcpy(&temp[2], device_id, 10);
-                    temp[12] = 0x4D;
-                    temp[13] = 0x03;
-                    temp[14] = 0x01;
-            
-                    if(get_ble_status() && device_info->data_up_switch)
-                    {
-                       esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
-                                            device_info->ble->conn_id,
-                                            device_info->ble->handle,
-                                            15, temp, false);
-                   }
-
-                }
-                else if (data[3] == 0x02)
-                {
-                    sensor_upgrade_flag = 0;
-                    pause_uart_task = true;
-                    char set_mode[] = "set mode 2";
-                    char return_value[50] = {0};
-                    set_bc(device_info->utc.time_stamp, set_mode, 1, 0, return_value, 100);
-                    printf("set mode 2 %s\n",return_value);
-                    vTaskDelay(100 / portTICK_PERIOD_MS);
-                    sensor_ota_mode_cnt = 0;
-
-                    temp[0] = 0xBB;
-                    temp[1] = 0xCC;
-                    memcpy(&temp[2], device_id, 10);
-                    temp[12] = 0x4D;
-                    temp[13] = 0x03;
-                    if(strstr(return_value,"ok"))
-                    {
-                        temp[14] = 0x02;
-                    }
-                    else{
-                        temp[14] = 0x03;
-                    }
-                    
-            
-                    if(get_ble_status() && device_info->data_up_switch)
-                    {
-                       esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
-                                            device_info->ble->conn_id,
-                                            device_info->ble->handle,
-                                            15, temp, false);
-                   }
-
-                }
-            
-            
-            }
-            else{           //接收bc固件升级字节流
-                sensor_ota_bc((char *)&data[2]);
-            }
-        }
-
-        else
-        {
-            printf("sensor up grade DATA WRONG \n");
-        }
-        
-    }
-    else
     {
         cJSON *firstItem = NULL;
         cJSON *sencondItem = NULL;
@@ -434,56 +308,7 @@ else if (data[0] == 0x33 && data[1]==0x44 && data[2]==0x55)
                                             strlen((char *)temp), (uint8_t *)temp, false);
             }
         }
-        else if(sencondItem->valueint == 5)
-        {
-            sencondItem = cJSON_GetObjectItem(firstItem, "cmd");
-            if(!sencondItem) return 0;
-
-            char temp[100] = {0};
-            if(strcmp(sencondItem->valuestring, "sensorUpgrade") == 0)
-            {
-                // memset(temp,0,100);
-                if(sleep_up_flag == 0 && ota_now_flag == 0)
-                {
-                    char set_mode[] = "set mode 3";
-                    char return_value[50] = {0};
-                    printf("set mode 3\n");
-                    set_bc(device_info->utc.time_stamp, set_mode, 1, 0, return_value, 100);
-                    vTaskDelay(100 / portTICK_PERIOD_MS);
-
-                    if(strncmp(return_value, "ok",2) == 0)
-                    {
-                        sensor_upgrade_flag = 1;
-                        pause_uart_task = false;
-                        vTaskDelay(1000 / portTICK_PERIOD_MS);
-                        uart_flush(UART_NUM_1);
-                        vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-                        sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":5,\"sdate\":\"Please start upgrading\"}",
-                                                        device_info->id,
-                                                        device_info->utc.time_stamp);
-                        
-                    }
-                    else{
-                        sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":5,\"sdate\":\"set upgrade mode fail\"}",
-                                                        device_info->id,
-                                                        device_info->utc.time_stamp);
-                    } 
-                }
-                else
-                {
-                    sprintf(temp,"{\"id\":\"%s\",\"ts\":%d,\"type\":5,\"sdate\":\"now now ota or sleepUp,please wait and again\"}",
-                                                        device_info->id,
-                                                        device_info->utc.time_stamp);
-                }
-                
-                printf("sensorUpgrade = %s \n",temp);
-                esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
-                                            device_info->ble->conn_id,
-                                            device_info->ble->handle,
-                                            strlen((char *)temp), (uint8_t *)temp, false);
-            }
-        }else if(sencondItem->valueint == 12)
+        else if(sencondItem->valueint == 12)
         {
             uint8_t cmd_bin[64] = {0}; 
             // printf("BLE: 12\n");
@@ -1207,28 +1032,6 @@ void uart_data_parser_task(void *pv)
     printf("为什么还没有进入uart_data_parser_task\n");
     while (1)
     { 
-        // printf("sensor_upgrade_flag = %d\n",sensor_upgrade_flag);
-        if(sensor_upgrade_flag != 0)
-        {
-            if(device_info->ble->flag == 0 || sensor_ota_mode_cnt == 1000)
-            {
-                sensor_upgrade_flag = 0;
-                pause_uart_task = true;
-                char set_mode[] = "set mode 4";
-                char return_value[50] = {0};
-                set_bc(device_info->utc.time_stamp, set_mode, 1, 0, return_value, 100);
-                printf("set mode 4 %s\n",return_value);
-                vTaskDelay(100 / portTICK_PERIOD_MS);
-                sensor_ota_mode_cnt = 0;
-
-            }
-            else
-            {
-                sensor_ota_mode_cnt++;
-            }  
-        }
-        
-  
         while(pause_uart_task)
         {
             int rxBytes = uart_read_bytes(UART_NUM_1, uart_recbuff, RX_BUF_SIZE, 20 / portTICK_RATE_MS);
@@ -1340,7 +1143,7 @@ void data_display_task(void *pv)
 {
     while(1)
     {
-        ESP_LOGI(TAG, "/*======111=====================data display===============%d===========*/",sensor_ota_mode_cnt);
+        ESP_LOGI(TAG, "/*======111=====================data display==========================*/");
 
         ESP_LOGI(TAG, "heap_size:%d,version:%s,id:%s,dataUpOn %d,sleepUping %d,sensorOta %d,current_report:%s",esp_get_free_heap_size(),device_info->ota.running_version,
                                                                                                 device_info->id,device_info->data_up_switch,
@@ -1475,133 +1278,338 @@ int set_bc(uint32_t time_stamp, char *value, uint8_t switch_return, uint8_t swit
     return 0;
 }
 
-int sensor_ota_bc(char *value)
+#define SU2_OTA_CHUNK            128U
+#define SU2_OTA_DATA_PDU_LEN     0x83U
+#define SU2_OTA_ERASE_TIMEOUT_MS 12000U
+#define SU2_OTA_DATA_TIMEOUT_MS  800U
+#define SU2_OTA_FINISH_TIMEOUT_MS 5000U
+#define SU2_OTA_PKT_RETRY        5
+#define SU2_OTA_ERASE_RESTART    2
+
+const char *get_sensor_version(void)
 {
-    int time=0;
-    char cmd[256] = {0};
-    uint8_t temp[256] = {0};
-    uint8_t size = 0;
-    uint16_t i = 0;
-    if(value[0] == 0x00)
-    {
-        size = 0x03;
+    return device_version;
+}
+
+void set_sensor_version(const char *ver)
+{
+    if (ver == NULL) {
+        return;
     }
-    else if (value[0] == 0x01)
-    {
-        size = 0x83;
+    memset(device_version, 0, sizeof(device_version));
+    strncpy(device_version, ver, sizeof(device_version) - 1U);
+}
+
+/* port4 应答：PDU 内 ID[10]+'M'+cmd(+status/seq) */
+static bool su2_ota_parse_ack(const uint8_t *buf, int len, uint8_t expect_cmd,
+                              uint8_t *status, uint16_t *seq)
+{
+    int i;
+    int j;
+
+    if (buf == NULL || len < 8) {
+        return false;
     }
-    else if (value[0] == 0x02)
-    {
-        size = 0x01;
-    }
-    
-    //组帧
-    cmd[0] = 0xAA;
-    cmd[1] = 0x55;
-    cmd[2] = 0x01;
-    cmd[3] = size;
-    cmd[4] = 0x47;
-	cmd[5] = 0x43;
-    memcpy(cmd + 6, value, size);
-    uint16_t crc16 = crc16_compute((uint8_t const*)cmd, size+6);
-	cmd[size+6] = (uint8_t)(crc16 & 0xFF);
-	cmd[size+7] = (uint8_t)((crc16 >> 8) & 0xFF);
+    for (i = 0; i + 8 <= len; i++) {
+        uint8_t pdu_len;
+        const uint8_t *pdu;
 
-    // pause_uart_task = false;
-    // vTaskDelay(50 / portTICK_PERIOD_MS);
-    // uart_flush(UART_NUM_1);
-    // vTaskDelay(50 / portTICK_PERIOD_MS);
-    uart_write_bytes(UART_NUM_1, cmd, size+8);
-
-
-    if(size <= 0x10)
-    {
-        for (i = 0; i < size+8; i++)
-            {
-                printf("%x ", cmd[i]);
-            }
-        printf("bc_receive SENSER OTA\n\r");
-        time = 8000;
-    }
-    else{
-        printf("bc_receive len %d SENSER OTA\n\r",size+8);
-        time = 100;			// 原本1000
-    }
-    
-
-    int rxBytes = uart_read_bytes(UART_NUM_1, uart_recbuff, RX_BUF_SIZE, time / portTICK_RATE_MS);   //等待传感器应答返回
-    if(rxBytes > 0)
-        {
-            sensor_ota_mode_cnt = 0;
-
-            for (i = 0; i < rxBytes; i++)
-            {
-                printf("%x ", uart_recbuff[i]);
-                
-                if(i>0x40)
-                {
-                    printf("uart_recbuff len %d",rxBytes);
-                    break;
-                }
-            }
-            printf("bc_send SENSER OTA\n\r");
-
-            for(i=0;i < rxBytes; i++)
-            {
-                if(uart_recbuff[i] == 0xAA && uart_recbuff[i+1] == 0x55)
-                {
-                    temp[0] = 0xBB;
-                    temp[1] = 0xCC;
-                    memcpy(&temp[2], uart_recbuff +i+6, uart_recbuff[i+3]);
-
-                    if(get_ble_status() && device_info->data_up_switch)
-                    {
-                        esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
-                                            device_info->ble->conn_id,
-                                            device_info->ble->handle,
-                                            (uart_recbuff[i+3]+2), temp, false);
-                    }
-                    break;
-                }
-            }
-            // temp[0] = 0xBB;
-            // temp[1] = 0xCC;
-            // memcpy(&temp[2], uart_recbuff +6, uart_recbuff[3]);
-
-            // if(get_ble_status() && device_info->data_up_switch)
-            // {
-            //     esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
-            //                                 device_info->ble->conn_id,
-            //                                 device_info->ble->handle,
-            //                                 (uart_recbuff[3]+2), temp, false);
-            // }
-            
+        if (buf[i] != 0xAA || buf[i + 1] != 0x55) {
+            continue;
         }
-    else
-    {
-            temp[0] = 0xBB;
-            temp[1] = 0xCC;
-            memcpy(&temp[2], device_id, 10);
-            temp[12] = 0x4D;
-            temp[13] = 0x01;
-            temp[14] = 0x03;
-            temp[15] = value[1];
-            temp[16] = value[2];
-            
-            if(get_ble_status() && device_info->data_up_switch)
-            {
-                esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
-                                            device_info->ble->conn_id,
-                                            device_info->ble->handle,
-                                            17, temp, false);
+        pdu_len = buf[i + 3];
+        if (i + 6 + (int)pdu_len > len) {
+            continue;
+        }
+        pdu = &buf[i + 6];
+        for (j = 0; j + 1 < (int)pdu_len; j++) {
+            if (pdu[j] != (uint8_t)'M') {
+                continue;
             }
-        printf("bc sensor upgrade no back date\n\r");
+            if (pdu[j + 1] != expect_cmd) {
+                continue; /* 可能夹杂旧帧，继续找下一帧 */
+            }
+            if (expect_cmd == 0x01U) {
+                if (j + 4 >= (int)pdu_len) {
+                    return false;
+                }
+                if (status) {
+                    *status = pdu[j + 2];
+                }
+                if (seq) {
+                    *seq = (uint16_t)pdu[j + 3] | ((uint16_t)pdu[j + 4] << 8);
+                }
+            } else if (expect_cmd == 0x02U) {
+                if (j + 2 >= (int)pdu_len) {
+                    return false;
+                }
+                if (status) {
+                    *status = pdu[j + 2];
+                }
+            } else if (status) {
+                *status = 0;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+static void su2_ota_send_pdu(const uint8_t *pdu, uint8_t size)
+{
+    char cmd[256];
+
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = (char)0xAA;
+    cmd[1] = (char)0x55;
+    cmd[2] = 0x01;
+    cmd[3] = (char)size;
+    cmd[4] = 0x47;
+    cmd[5] = 0x43;
+    memcpy(cmd + 6, pdu, size);
+    {
+        uint16_t crc16 = crc16_compute((uint8_t const *)cmd, (uint32_t)size + 6U);
+        cmd[size + 6] = (char)(crc16 & 0xFF);
+        cmd[size + 7] = (char)((crc16 >> 8) & 0xFF);
+    }
+    uart_write_bytes(UART_NUM_1, cmd, size + 8);
+}
+
+static esp_err_t su2_ota_tx_wait(const uint8_t *pdu, uint8_t size, uint8_t expect_cmd,
+                                 uint32_t timeout_ms, uint8_t *status, uint16_t *seq)
+{
+    TickType_t start;
+    TickType_t to;
+    int total = 0;
+    int k;
+
+    if (uart_recbuff == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    su2_ota_send_pdu(pdu, size);
+
+    /*
+     * 不能 uart_read_bytes(..., RX_BUF_SIZE, 800ms)：IDF 会等到凑满 length 或超时。
+     * ACK 只有约 20~30 字节，结果每包都空等满 timeout（1000 包 ≈ 13 分钟）。
+     * SU3 用 RX 任务+信号量，ACK 一到就返回；这里按「有多少读多少」轮询。
+     */
+    start = xTaskGetTickCount();
+    to = pdMS_TO_TICKS(timeout_ms);
+    while ((xTaskGetTickCount() - start) < to) {
+        size_t avail = 0;
+        size_t room = (size_t)RX_BUF_SIZE - (size_t)total;
+        int n;
+
+        if (room == 0U) {
+            break;
+        }
+        uart_get_buffered_data_len(UART_NUM_1, &avail);
+        if (avail == 0U) {
+            n = uart_read_bytes(UART_NUM_1, uart_recbuff + total, 1,
+                                pdMS_TO_TICKS(20));
+        } else {
+            if (avail > room) {
+                avail = room;
+            }
+            n = uart_read_bytes(UART_NUM_1, uart_recbuff + total, avail, 0);
+        }
+        if (n > 0) {
+            total += n;
+            if (su2_ota_parse_ack(uart_recbuff, total, expect_cmd, status, seq)) {
+                return ESP_OK;
+            }
+        }
+    }
+    if (total > 0) {
+        ESP_LOGW(TAG, "sensor ota: ack parse fail cmd=0x%02X rx=%d",
+                 expect_cmd, total);
+        for (k = 0; k < total && k < 24; k++) {
+            printf("%02X ", uart_recbuff[k]);
+        }
+        printf("\n");
+        return ESP_ERR_NOT_FOUND;
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
+static esp_err_t su2_ota_set_mode3(void)
+{
+    char rsp[64];
+    int i;
+
+    for (i = 0; i < 10; i++) {
+        memset(rsp, 0, sizeof(rsp));
+        set_bc(device_info->utc.time_stamp, "set mode 3", 1, 0, rsp, 1500);
+        if (strncmp(rsp, "ok", 2) == 0) {
+            ESP_LOGI(TAG, "sensor ota: set mode 3 ok");
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "sensor ota: set mode 3 fail rsp=\"%.16s\"", rsp);
+        vTaskDelay(300 / portTICK_PERIOD_MS);
+    }
+    return ESP_FAIL;
+}
+
+static esp_err_t su2_ota_transfer(const uint8_t *fw, size_t fw_len)
+{
+    uint16_t pkt_total;
+    uint16_t pkt_idx;
+    uint8_t pdu[SU2_OTA_DATA_PDU_LEN];
+    uint8_t status;
+    uint16_t ack_seq;
+    esp_err_t err;
+    int erase_round;
+    int retry;
+    size_t off;
+    size_t copy_len;
+    uint32_t last_log_pct = (uint32_t)-1;
+
+    pkt_total = (uint16_t)((fw_len + SU2_OTA_CHUNK - 1U) / SU2_OTA_CHUNK);
+    if (pkt_total == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ESP_LOGI(TAG, "sensor ota: flash start len=%u pkts=%u",
+             (unsigned)fw_len, (unsigned)pkt_total);
+
+    for (erase_round = 0; erase_round <= SU2_OTA_ERASE_RESTART; erase_round++) {
+        pdu[0] = 0x00;
+        pdu[1] = (uint8_t)(pkt_total & 0xFFU);
+        pdu[2] = (uint8_t)((pkt_total >> 8) & 0xFFU);
+        err = ESP_FAIL;
+        for (retry = 0; retry < SU2_OTA_PKT_RETRY; retry++) {
+            status = 0xFF;
+            err = su2_ota_tx_wait(pdu, 0x03, 0x00, SU2_OTA_ERASE_TIMEOUT_MS,
+                                  &status, &ack_seq);
+            if (err == ESP_OK) {
+                break;
+            }
+            ESP_LOGW(TAG, "sensor ota: erase retry=%d err=%s",
+                     retry + 1, esp_err_to_name(err));
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "sensor ota: erase fail");
+            return err;
+        }
+        ESP_LOGI(TAG, "sensor ota: erase ok");
+
+        for (pkt_idx = 0; pkt_idx < pkt_total; pkt_idx++) {
+            off = (size_t)pkt_idx * SU2_OTA_CHUNK;
+            copy_len = fw_len - off;
+            if (copy_len > SU2_OTA_CHUNK) {
+                copy_len = SU2_OTA_CHUNK;
+            }
+            memset(pdu, 0xFF, sizeof(pdu));
+            pdu[0] = 0x01;
+            pdu[1] = (uint8_t)(pkt_idx & 0xFFU);
+            pdu[2] = (uint8_t)((pkt_idx >> 8) & 0xFFU);
+            memcpy(&pdu[3], &fw[off], copy_len);
+
+            for (retry = 0; retry < SU2_OTA_PKT_RETRY; retry++) {
+                status = 0xFF;
+                ack_seq = 0xFFFF;
+                err = su2_ota_tx_wait(pdu, SU2_OTA_DATA_PDU_LEN, 0x01,
+                                      SU2_OTA_DATA_TIMEOUT_MS, &status, &ack_seq);
+                if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_NOT_FOUND) {
+                    continue; /* 超时或夹杂旧帧：重发本包 */
+                }
+                if (err != ESP_OK) {
+                    return err;
+                }
+                if (status == 0x00U) {
+                    break;
+                }
+                if (status == 0x01U) {
+                    continue;
+                }
+                if (status == 0x02U) {
+                    goto su2_ota_restart_erase;
+                }
+            }
+            if (err != ESP_OK || status != 0x00U) {
+                ESP_LOGE(TAG, "sensor ota: pkt %u fail", (unsigned)pkt_idx);
+                return ESP_FAIL;
+            }
+            {
+                uint32_t pct = ((uint32_t)(pkt_idx + 1U) * 100U) / (uint32_t)pkt_total;
+                if (pct > 100U) {
+                    pct = 100U;
+                }
+                if (pct != last_log_pct) {
+                    last_log_pct = pct;
+                    ESP_LOGI(TAG, "传感器刷写进度 %3u%%  (%u/%u)",
+                             (unsigned)pct,
+                             (unsigned)(pkt_idx + 1U),
+                             (unsigned)pkt_total);
+                }
+            }
+        }
+
+        pdu[0] = 0x02;
+        for (retry = 0; retry < SU2_OTA_PKT_RETRY; retry++) {
+            status = 0xFF;
+            err = su2_ota_tx_wait(pdu, 0x01, 0x02, SU2_OTA_FINISH_TIMEOUT_MS,
+                                  &status, &ack_seq);
+            if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_NOT_FOUND) {
+                continue;
+            }
+            if (err != ESP_OK) {
+                return err;
+            }
+            if (status == 0x00U) {
+                ESP_LOGI(TAG, "sensor ota: flash finish ok");
+                return ESP_OK;
+            }
+            if (status == 0x01U) {
+                goto su2_ota_restart_erase;
+            }
+        }
+        return ESP_FAIL;
+
+su2_ota_restart_erase:
+        ESP_LOGW(TAG, "sensor ota: restart erase");
+        last_log_pct = (uint32_t)-1;
+        continue;
+    }
+    return ESP_FAIL;
+}
+
+esp_err_t sensor_ota_flash(const uint8_t *fw, size_t fw_len)
+{
+    esp_err_t err;
+    char rsp[32];
+
+    if (fw == NULL || fw_len == 0 || uart_recbuff == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (get_sleep_up_flag()) {
+        ESP_LOGE(TAG, "sensor ota: sleep report busy");
+        return ESP_ERR_INVALID_STATE;
     }
 
+    err = su2_ota_set_mode3();
+    if (err != ESP_OK) {
+        return err;
+    }
 
-    // pause_uart_task = true;
+    sensor_upgrade_flag = 1;
+    pause_uart_task = false;
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    uart_flush(UART_NUM_1);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
 
-    return 0;
+    err = su2_ota_transfer(fw, fw_len);
+
+    pause_uart_task = true;
+    sensor_upgrade_flag = 0;
+
+    if (err == ESP_OK) {
+        sensor_reboot_config();
+    } else {
+        memset(rsp, 0, sizeof(rsp));
+        set_bc(device_info->utc.time_stamp, "set mode 2", 1, 0, rsp, 1500);
+        ESP_LOGE(TAG, "sensor ota fail, restore mode2 rsp=\"%.16s\"", rsp);
+    }
+    return err;
 }
 
 uint32_t find_report_time(char *report_name, uint8_t len)
@@ -1889,6 +1897,9 @@ void utc_get_task(void *pv)
         vTaskDelay(1000 / portTICK_PERIOD_MS);
         set_bc(device_info->utc.time_stamp, get_version_cmd, 1, 0, device_version, 100);
         printf("[UTC]  get_version_cmd= %s\n",device_version);
+        if (device_version[0] != '\0') {
+            sensor_ota_report_version_on_mqtt();
+        }
     }
     while(1)
     {
@@ -1943,6 +1954,9 @@ void utc_get_task(void *pv)
             set_bc(device_info->utc.time_stamp, get_version_cmd, 1, 0, device_version, 20);
             vTaskDelay(100 / portTICK_PERIOD_MS);
             printf("bc version = %s\n",device_version);
+            if (device_version[0] != '\0') {
+                sensor_ota_report_version_on_mqtt();
+            }
 
         }
 

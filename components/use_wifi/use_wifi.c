@@ -57,6 +57,7 @@
 // topic
 
 char ota_infor_publish_topic[64] = {0};     // 缩减为64
+char ota_progress_publish_topic[64] = {0};
 char user_5s_data_publish_topic[64] = {0};
 char user_60s_data_publish_topic[64] = {0};
 char user_sa_data_publish_topic[64] = {0};
@@ -254,7 +255,14 @@ static void mqtt_handle_ota_upgrade_payload(const char *payload)
 
     ESP_LOGI(TAG, "OTA upgrade push: %s -> %s",device_info->ota.running_version, device_info->ota.upgrade_version);
     cJSON_Delete(root);
-    ota_start();
+
+    /* SU2 传感器包：下载到 ESP 后走 port4，勿走板端 esp_https_ota */
+    if (ota_upgrade_is_sensor_fw(device_info->ota.upgrade_version)) {
+        ESP_LOGI(TAG, "route as sensor firmware OTA");
+        sensor_ota_start();
+    } else {
+        ota_start();
+    }
 }
 
 //wifi操作函数
@@ -298,10 +306,8 @@ static void event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "connected");
         set_wifi_status(WIFI_STATUS_CONNECTED);
         start_sntp_once();
-        /* 首次 MQTT 在 SNTP 回调 on_sntp_synced 中创建并 start；
-         * WiFi 重连后 client 已存在，此处恢复连接。
-         * OTA 下载期间 MQTT 已 stop，禁止此处 start，避免双 TLS。 */
-        if (client != NULL && get_ota_now_flag() == 0) {
+        /* 仅 HTTPS 下载 pause MQTT 时禁止 start；串口刷写阶段应允许重连 */
+        if (client != NULL && !ota_mqtt_is_paused()) {
             esp_err_t merr = esp_mqtt_client_start(client);
             if (merr != ESP_OK && merr != ESP_ERR_INVALID_STATE) {
                 ESP_LOGW(TAG, "esp_mqtt_client_start on GOT_IP: %s", esp_err_to_name(merr));
@@ -374,6 +380,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         
         sprintf(ota_upgrade_subscribe_topic,  "/ota/device/upgrade/%s/%s",device_info->aliyun.product_key, device_info->aliyun.device_id);
         sprintf(ota_infor_publish_topic,  "/ota/device/inform/%s/%s",device_info->aliyun.product_key, device_info->aliyun.device_id);
+        sprintf(ota_progress_publish_topic, "/ota/device/progress/%s/%s",device_info->aliyun.product_key, device_info->aliyun.device_id);
 
         sprintf(mc_cli_data_subscribe_topic, "/%s/%s/user/cli/get", device_info->aliyun.product_key, device_info->aliyun.device_id); // mcli 合并到cil中了  
         sprintf(mc_cli_data_publish_topic, "/%s/%s/user/mccli/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
@@ -395,6 +402,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG, "OTA inform publish: version=%s", device_info->ota.running_version);
         esp_mqtt_client_publish(client, ota_infor_publish_topic,
                 (char *)temp, strlen((char *)temp), 1, 0);
+        sensor_ota_report_version_on_mqtt();
         printf("MQTT_client1");
         break;
     // 客户端断开连接 10s自动尝试重连
