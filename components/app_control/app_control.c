@@ -308,6 +308,30 @@ else if (data[0] == 0x22 && data[1]==0x33 && data[2]==0x44)
                                             strlen((char *)temp), (uint8_t *)temp, false);
             }
         }
+        else if(sencondItem->valueint == 18)  /* 查询板端 + SU2 固件版本 */
+        {
+            char temp[256] = {0};
+            const char *esp_ver = device_info->ota.running_version;
+            const char *su2_ver = get_sensor_version();
+
+            if (esp_ver == NULL || esp_ver[0] == '\0') {
+                esp_ver = INIT_VERSION;
+            }
+            if (su2_ver == NULL) {
+                su2_ver = "";
+            }
+            snprintf(temp, sizeof(temp),
+                     "{\"id\":\"%s\",\"ts\":%d,\"type\":18,\"esp\":\"%s\",\"su2\":\"%s\"}",
+                     device_info->id,
+                     device_info->utc.time_stamp,
+                     esp_ver,
+                     su2_ver);
+            printf("fwVersion = %s \n", temp);
+            esp_ble_gatts_send_indicate(device_info->ble->gatts_if,
+                                        device_info->ble->conn_id,
+                                        device_info->ble->handle,
+                                        (uint16_t)strlen(temp), (uint8_t *)temp, false);
+        }
         else if(sencondItem->valueint == 12)
         {
             uint8_t cmd_bin[64] = {0}; 
@@ -1900,6 +1924,7 @@ void utc_get_task(void *pv)
         if (device_version[0] != '\0') {
             sensor_ota_report_version_on_mqtt();
         }
+        airbag_report_versions();
     }
     while(1)
     {
@@ -1957,6 +1982,7 @@ void utc_get_task(void *pv)
             if (device_version[0] != '\0') {
                 sensor_ota_report_version_on_mqtt();
             }
+            airbag_report_versions();
 
         }
 

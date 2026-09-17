@@ -31,6 +31,7 @@ extern device_info_t *device_info;
 extern esp_mqtt_client_handle_t client;
 extern char ota_infor_publish_topic[64];
 extern char ota_progress_publish_topic[64];
+extern char user_airbag_publish_topic[64];
 
 static bool s_mqtt_paused_for_ota = false;
 
@@ -354,6 +355,66 @@ void sensor_ota_report_version_on_mqtt(void)
     } else {
         ota_report_inform(OTA_MODULE_SENSOR, cli_ver);
     }
+}
+
+/* wait_mqtt：utc 任务里可等最多 20s；MQTT 回调里必须为 false，禁止阻塞事件循环 */
+static void airbag_publish_versions(bool wait_mqtt)
+{
+    char buf[320];
+    char cloud_ver[48];
+    const char *esp_ver;
+    const char *cli_ver;
+    const char *su2_ver = "NULL";
+    int i;
+
+    if (wait_mqtt) {
+        for (i = 0; i < 40; i++) {
+            if (get_mqtt_status() && user_airbag_publish_topic[0] != '\0') {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+    }
+    if (client == NULL || !get_mqtt_status() || user_airbag_publish_topic[0] == '\0') {
+        ESP_LOGW(TAG, "airbag version skip: mqtt not ready");
+        return;
+    }
+
+    esp_ver = device_info->ota.running_version;
+    if (esp_ver == NULL || esp_ver[0] == '\0') {
+        esp_ver = INIT_VERSION;
+    }
+    cli_ver = get_sensor_version();
+    if (cli_ver != NULL && cli_ver[0] != '\0') {
+        if (sensor_ver_to_cloud_format(cli_ver, cloud_ver, sizeof(cloud_ver))) {
+            su2_ver = cloud_ver;
+        } else {
+            su2_ver = cli_ver;
+        }
+    }
+
+    /* 自定义 user/airbag/put：板端必报；SU2 未读到则 su_version 为 NULL */
+    snprintf(buf, sizeof(buf),
+             "{\"id\":\"%s\",\"ts\":%d,\"value\":{"
+             "\"bc_module\":\"default\",\"bc_version\":\"%s\","
+             "\"su_module\":\"sensor\",\"su_version\":\"%s\"}}",
+             device_info->id,
+             device_info->utc.time_stamp,
+             esp_ver,
+             su2_ver);
+    ESP_LOGI(TAG, "airbag version: %s", buf);
+    esp_mqtt_client_publish(client, user_airbag_publish_topic, buf,
+                            (int)strlen(buf), 1, 0);
+}
+
+void airbag_report_versions(void)
+{
+    airbag_publish_versions(true);
+}
+
+void airbag_report_versions_on_mqtt(void)
+{
+    airbag_publish_versions(false);
 }
 
 bool ota_upgrade_is_sensor_fw(const char *version)

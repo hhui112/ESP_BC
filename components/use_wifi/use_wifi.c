@@ -58,6 +58,7 @@
 
 char ota_infor_publish_topic[64] = {0};     // 缩减为64
 char ota_progress_publish_topic[64] = {0};
+char user_airbag_publish_topic[64] = {0};
 char user_5s_data_publish_topic[64] = {0};
 char user_60s_data_publish_topic[64] = {0};
 char user_sa_data_publish_topic[64] = {0};
@@ -254,6 +255,14 @@ static void mqtt_handle_ota_upgrade_payload(const char *payload)
     strncpy(device_info->ota.url, url_item->valuestring, sizeof(device_info->ota.url) - 1);
 
     ESP_LOGI(TAG, "OTA upgrade push: %s -> %s",device_info->ota.running_version, device_info->ota.upgrade_version);
+    ESP_LOGI(TAG, "OTA download url: %s", device_info->ota.url);
+    if (strncmp(device_info->ota.url, "https://", 8) == 0) {
+        ESP_LOGI(TAG, "OTA download transport=HTTPS (TLS)");
+    } else if (strncmp(device_info->ota.url, "http://", 7) == 0) {
+        ESP_LOGW(TAG, "OTA download transport=HTTP (no TLS)");
+    } else {
+        ESP_LOGW(TAG, "OTA download transport=unknown");
+    }
     cJSON_Delete(root);
 
     /* SU2 传感器包：下载到 ESP 后走 port4，勿走板端 esp_https_ota */
@@ -357,6 +366,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     // 建立连接成功
     case MQTT_EVENT_CONNECTED:
         printf("MQTT_client cnnnect ok. \n");
+        ESP_LOGI(TAG, "MQTT connected transport: uri=%s tls=%s",
+                 s_mqtt_uri,
+                 (strncmp(s_mqtt_uri, "mqtts://", 8) == 0) ? "YES(mqtts+cert)" : "NO(mqtt)");
         s_mqtt_retry_num = 0;
         if(get_one_key_config_wifi_status())
         {
@@ -374,6 +386,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         sprintf(user_60s_data_publish_topic, "/%s/%s/user/60s/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
         sprintf(user_sa_data_publish_topic, "/%s/%s/user/sa/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
         sprintf(user_sleep_data_publish_topic, "/%s/%s/user/sleep/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
+        sprintf(user_airbag_publish_topic, "/%s/%s/user/airbag/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
         
         sprintf(user_cli_data_subscribe_topic, "/%s/%s/user/cli/get", device_info->aliyun.product_key, device_info->aliyun.device_id); 
         sprintf(user_cli_data_publish_topic, "/%s/%s/user/cli/put", device_info->aliyun.product_key, device_info->aliyun.device_id);
@@ -388,6 +401,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         printf("%s\n", user_60s_data_publish_topic);
         printf("%s\n", user_sa_data_publish_topic);
         printf("%s\n", user_sleep_data_publish_topic);
+        printf("%s\n", user_airbag_publish_topic);
         printf("%s\n", ota_infor_publish_topic);
         printf("%s\n", ota_upgrade_subscribe_topic);
         printf("%s\n", mc_cli_data_subscribe_topic);
@@ -403,6 +417,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         esp_mqtt_client_publish(client, ota_infor_publish_topic,
                 (char *)temp, strlen((char *)temp), 1, 0);
         sensor_ota_report_version_on_mqtt();
+        /* MQTT 一连上就上报 airbag/put（BC 版本必有；SU2 未读到则为 NULL） */
+        airbag_report_versions_on_mqtt();
         printf("MQTT_client1");
         break;
     // 客户端断开连接 10s自动尝试重连
@@ -750,6 +766,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 */  
         else if (msg && strstr(msg->topic, ota_upgrade_subscribe_topic))
         {
+            ESP_LOGI(TAG, "OTA mqtt topic=%s qos_payload_len=%u",
+                     msg->topic, (unsigned)msg->data_len);
+            ESP_LOGI(TAG, "OTA mqtt payload=%s", msg->data);
+            ESP_LOGI(TAG, "OTA mqtt session: uri=%s tls=%s cert_pem=%s",
+                     s_mqtt_uri,
+                     (strncmp(s_mqtt_uri, "mqtts://", 8) == 0) ? "YES(mqtts)" : "NO(mqtt)",
+                     (s_mqtt_ca_cert[0] != '\0') ? "configured" : "none");
             mqtt_handle_ota_upgrade_payload((char *)msg->data);
         }
         free(msg);
